@@ -3,29 +3,22 @@
 // The board ranks every protocol in the snapshot that records no token (342 of them), in two
 // tiers. The launch tier holds the protocols that could still launch a token of their own: no
 // token on record, not a centralised exchange, not a versioned pool of another protocol, and not
-// a wrapped, staked or bridged copy. The copy tier holds the rest — wrapped, staked and bridged
-// products of tokens that already trade — ranked at the bottom, because a copy is not a launch of
-// its own. The watchlist (40 slugs) is the floor: every one of them is in the launch tier, and
-// the early radar adds every other launch-tier protocol below the floor, by TVL. Nothing is
+// a wrapped, staked or bridged copy. The copy tier holds the rest, ranked at the bottom. The
+// watchlist (40 slugs) is the floor: every one of them is in the launch tier. Nothing is
 // hand-picked and no protocol name is ever special-cased: the same functions score every row.
 //
 // Implied value follows only from the snapshot's own figures:
 //
-//   base         = tvl_usd x BASE_MULTIPLE
-//   growth       = clamp(change_7d, -80, 200) per cent (null counts as 0)
-//   growthMult   = 1 + (growth / 100) x GROWTH_WEIGHT_UP    when growth >= 0
-//                = 1 + (growth / 100) x GROWTH_WEIGHT_DOWN  when growth < 0
+//   implied = max(1, round(tvl_usd x 0.30 x growthMult x maturityMult))
+//   growthMult   = 1 + clamp(change_7d, -80, 200) / 100 x (0.8 up / 1.2 down), null counts as 0
 //                  (a shrinking TVL hurts more than a growing one helps)
-//   maturity     = 0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)
-//                  (age_days unknown: 365; the curve rises fast, then plateaus —
-//                   a protocol that has run two years with no token is nearly as
-//                   mature as one that has run three)
-//   implied      = max(1, round(base x growthMult x maturity))
+//   maturityMult = 0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)
+//                  (age_days unknown: 365; the curve rises fast, then plateaus)
 //
 // A copy's implied value is the same formula at a 2% weight, rescaled so the largest copy
-// stays below the smallest launch: copies are measured on the same ruler, then put where they
-// belong. The dashboard states the formula and recomputes every row from the snapshot figures,
-// so the page's code and the board's data are visibly the same arithmetic.
+// stays below the smallest launch. The dashboard states the formula and recomputes every row
+// from the snapshot figures, so the page's code and the board's data are visibly the same
+// arithmetic.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -229,14 +222,8 @@ export function isLaunch(p: SnapshotProtocol): boolean {
   return isPreToken(p) && !isCopy(p);
 }
 
-/** The snapshot's protocol by slug. */
-function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
-  return new Map(protocols.map((p) => [p.slug, p]));
-}
-
-/** The protocols the board ranks, strongest first, with ranks 1..n and copies at the bottom. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const index = bySlug(snapshot.protocols);
+  const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const launches = new Map<string, SnapshotProtocol>();
   const copies = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug it names belongs in the launch tier. A watchlist
@@ -281,8 +268,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   return rows;
 }
 
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-
 function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; age: number | null }, implied: number, tier: Tier): BoardRow {
   return {
     rank: 0,
@@ -303,8 +288,8 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     model: {
       base_multiple: MODEL.base_multiple,
       growth_pct: v.growthPct,
-      growth_multiplier: round4(v.growthMult),
-      maturity_multiplier: round4(v.maturityMult),
+      growth_multiplier: Math.round(v.growthMult * 1e4) / 1e4,
+      maturity_multiplier: Math.round(v.maturityMult * 1e4) / 1e4,
       age_days: v.age,
     },
     farm_steps: farmSteps(p, v.age).map(stepText),
@@ -350,124 +335,180 @@ function holdDaysFor(age: number | null): number {
   return 45;
 }
 
+/** One category's farm actions, as templates — ${name} the protocol, ${app} its own app
+ *  on the chain, ${capital} the position size, ${small} a fifth of it, ${chain} the chain,
+ *  ${log} the farm-log line. One table drives all four writers, so a category's wording
+ *  lives in one place instead of four parallel if-chains. An entry that leaves a field
+ *  out falls through to the default for that writer: the chain, payment and privacy
+ *  categories have a main and a weekly action only, exactly as the four writers had
+ *  before — their second action and exit were always the generic ones. */
+type CatKey = 'main' | 'second' | 'weekly' | 'exit';
+interface CatActions {
+  keys: string[];
+  exact?: string;
+  main?: string;
+  second?: string;
+  weekly?: string;
+  exit?: string;
+}
+
+const LOG_LINE = 'and write the wallet, the dates and every transaction in a farm log.';
+
+const CATS: CatActions[] = [
+  { keys: ['lend', 'cdp', 'collateral'],
+    main: "Supply $${capital} of USDC to ${name} through ${app} and keep the position open.",
+    second: "Borrow $${small} against the supply on ${app}, then repay it the same week.",
+    weekly: "Top up the supply by $${small} on ${app} each week so the position keeps growing.",
+    exit: "To exit, repay the borrow first, then withdraw the supply — in that order — ${log}" },
+  { keys: ['dex', 'yield', 'leveraged farm', 'farm'],
+    main: "Provide $${capital} of liquidity to ${name}'s main pool through ${app} and keep the position open.",
+    second: "Swap $${small} through ${name}'s main pool on ${app}.",
+    weekly: "Collect the pool fees on ${app} each week and add them back to the position.",
+    exit: "To exit, claim the pool fees first, then remove the liquidity, ${log}" },
+  { keys: ['bridge'],
+    main: "Bridge $${capital} of USDC to ${chain} through ${app}, then use the bridged funds in the app.",
+    second: "Bridge a second, smaller amount back through ${app} so the route is used both ways.",
+    weekly: "Bridge $${small} through ${app} each week, alternating direction so the route stays active.",
+    exit: "To exit, bridge the funds back to the chain you started on, ${log}" },
+  { keys: ['staking', 'restak'],
+    main: "Stake $${capital} of the chain's staking asset through ${app} and keep the receipt token.",
+    second: "Claim or restake the staking rewards on ${app} once they appear.",
+    weekly: "Claim or restake the staking rewards on ${app} once a week.",
+    exit: "To exit, claim the staking rewards first, then unstake, ${log}" },
+  { keys: ['perpetual', 'derivative', 'options'],
+    main: "Deposit $${capital} of USDC as margin on ${name} through ${app} and open one small hedged trade.",
+    second: "Close the first trade on ${app} and open a second one half its size.",
+    weekly: "Open and close one small hedged trade a week on ${app}.",
+    exit: "To exit, close every open trade first, then withdraw the margin, ${log}" },
+  { keys: ['prediction'],
+    main: "Fund $${capital} on ${name} through ${app} and place one market position.",
+    second: "Settle the first market on ${app} and place a second, smaller position.",
+    weekly: "Place one small market position a week on ${app}.",
+    exit: "To exit, settle or close every open market position, then withdraw, ${log}" },
+  { keys: ['curator', 'allocator', 'risk'],
+    main: "Deposit $${capital} into a ${name} vault through ${app} and keep the vault shares.",
+    second: "Move $${small} between two ${name} vaults on ${app}.",
+    weekly: "Claim the vault yield on ${app} each week and redeposit it into the same vault.",
+    exit: "To exit, claim the vault yield first, then withdraw from the vault, ${log}" },
+  { keys: ['stable'],
+    main: "Mint or deposit $${capital} of the stable asset through ${app}.",
+    second: "Redeem a small part of the stable position on ${app}, then deposit it back.",
+    weekly: "Top up the stable position by $${small} on ${app} each week.",
+    exit: "To exit, redeem the stable position back to USDC, ${log}" },
+  { keys: ['rwa'],
+    main: "Mint $${capital} of ${name}'s yield asset through ${app} and hold it.",
+    second: "Claim the yield the asset paid on ${app} and reinvest it in the same asset.",
+    weekly: "Top up the position by $${small} on ${app} each week so the holding keeps growing.",
+    exit: "To exit, redeem the yield asset on ${app}, ${log}" },
+  { keys: ['insurance'],
+    main: "Buy $${capital} of cover from ${name} through ${app} and keep the policy.",
+    second: "File a test claim for a covered event on ${app} and follow it to a decision.",
+    weekly: "Renew or top up the cover on ${app} each week while the policy runs.",
+    exit: "To exit, let the cover lapse or cancel the policy, ${log}" },
+  { keys: ['chain'],
+    main: "Use $${capital} of the chain's gas token in ${name}'s own app on ${chain} and keep the activity going.",
+    weekly: "Make one small transaction in ${name}'s own app on ${chain} each week." },
+  { keys: ['payment'],
+    main: "Spend $${capital} through ${name}'s payments app on ${chain} and keep the card or account active.",
+    weekly: "Spend $${small} through ${name}'s payments app on ${chain} each week." },
+  { keys: ['privacy'],
+    main: "Use $${capital} through ${name}'s private app on ${chain} and keep the shielded balance.",
+    weekly: "Refresh the shielded balance through ${name}'s private app on ${chain} each week." },
+  { keys: ['basis'],
+    main: "Open a $${capital} basis trade on ${name} through ${app}: buy spot and short the same amount on the perpetual, and keep both legs open.",
+    second: "Rebalance the two legs on ${app} when the funding rate flips against the trade.",
+    weekly: "Check the funding rate on ${app} each week and rebalance the legs when it flips.",
+    exit: "To exit, close the short leg first, then sell the spot leg, ${log}" },
+  { keys: ['liquidity manager'],
+    main: "Deposit $${capital} into a ${name} managed vault through ${app} and let it rebalance the range for you.",
+    second: "Claim the rebalancing fees ${name} earned on ${app}.",
+    weekly: "Claim the vault fees on ${app} each week and add them back to the position.",
+    exit: "To exit, claim the vault fees first, then withdraw from the managed vault, ${log}" },
+  { keys: ['governance'],
+    main: "Lock or delegate $${capital} of voting power through ${app} and vote on the proposals that are open.",
+    second: "Vote on a second proposal on ${app} once it opens.",
+    weekly: "Vote on each new proposal on ${app} every week while the position is locked.",
+    exit: "To exit, unlock the voting power after the vote closes, ${log}" },
+  { keys: ['btc'],
+    main: "Deposit $${capital} of BTC through ${app} and hold the receipt token it issues.",
+    second: "Move a small amount of the receipt token on ${app} so the position is used, not just held.",
+    weekly: "Top up the BTC deposit by $${small} on ${app} each week so the position keeps growing.",
+    exit: "To exit, redeem the receipt token for BTC on ${app}, ${log}" },
+  { keys: ['cedefi'],
+    main: "Deposit $${capital} into ${name}'s CeDeFi vault through ${app} and keep the position open.",
+    second: "Claim the vault yield ${name} paid on ${app}.",
+    weekly: "Claim the vault yield on ${app} each week and redeposit it into the same vault.",
+    exit: "To exit, withdraw from the CeDeFi vault on ${app}, ${log}" },
+  { keys: ['otc'],
+    main: "Fill a $${capital} OTC order on ${name} through ${app} and settle it on-chain.",
+    second: "Fill a second, smaller OTC order on ${app}.",
+    weekly: "Place one small OTC order a week on ${app}.",
+    exit: "To exit, cancel any open OTC orders on ${app}, then withdraw, ${log}" },
+  { keys: ['card'],
+    main: "Load $${capital} onto the ${name} card through ${app} and spend it so the account stays active.",
+    second: "Spend a small amount through the card on ${app}.",
+    weekly: "Spend $${small} through the ${name} card on ${chain} each week.",
+    exit: "To exit, spend down or withdraw the card balance on ${app}, ${log}" },
+  { keys: ['cex'], exact: 'centralized exchange',
+    main: "Open an account with ${name} through its own app and deposit $${capital} to trade.",
+    second: "Place a second, smaller trade on ${app}.",
+    weekly: "Make one small trade a week on ${app}.",
+    exit: "To exit, withdraw the balance from ${name} to your own wallet, ${log}" },
+];
+
+const DEFAULT_CAT: Record<CatKey, string> = {
+  main: "Deposit $${capital} of USDC into ${name} through ${app} and keep the position open.",
+  second: "Make a second, smaller deposit of $${small} on ${app}.",
+  weekly: "Deposit $${small} of USDC into ${name} through ${app} each week so the position keeps qualifying.",
+  exit: 'Write the wallet, the dates and every transaction in a farm log, then unwind in reverse order when you exit.',
+};
+
+/** Fill a template with the protocol's own values. */
+function fill(template: string, p: SnapshotProtocol, capital: number, chain: string): string {
+  return template
+    .replaceAll('${name}', p.name)
+    .replaceAll('${app}', `${p.name}'s own app on ${chain}`)
+    .replaceAll('${capital}', String(capital))
+    .replaceAll('${small}', String(Math.max(10, Math.round(capital / 5))))
+    .replaceAll('${chain}', chain)
+    .replaceAll('${log}', LOG_LINE);
+}
+
+/** The category's template for one writer: the first table entry whose keywords the
+ *  category contains and that defines that writer, else the default. The main writer
+ *  also matches a category named exactly 'centralized exchange', as before. */
+function catTemplate(c: string, key: CatKey): string {
+  for (const e of CATS) {
+    if ((key === 'main' && e.exact === c) || e.keys.some((k) => c.includes(k))) {
+      const t = e[key];
+      if (t !== undefined) return t;
+    }
+  }
+  return DEFAULT_CAT[key];
+}
+
 /** The category's first action, in the words a farmer can follow, naming the protocol's own app. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  const app = `${name}'s own app on ${chain}`;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Supply $${capital} of USDC to ${name} through ${app} and keep the position open.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Provide $${capital} of liquidity to ${name}'s main pool through ${app} and keep the position open.`;
-  if (c.includes('bridge')) return `Bridge $${capital} of USDC to ${chain} through ${app}, then use the bridged funds in the app.`;
-  if (c.includes('staking') || c.includes('restak')) return `Stake $${capital} of the chain's staking asset through ${app} and keep the receipt token.`;
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `Deposit $${capital} of USDC as margin on ${name} through ${app} and open one small hedged trade.`;
-  if (c.includes('prediction')) return `Fund $${capital} on ${name} through ${app} and place one market position.`;
-  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `Deposit $${capital} into a ${name} vault through ${app} and keep the vault shares.`;
-  if (c.includes('stable')) return `Mint or deposit $${capital} of the stable asset through ${app}.`;
-  if (c.includes('rwa')) return `Mint $${capital} of ${name}'s yield asset through ${app} and hold it.`;
-  if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} through ${app} and keep the policy.`;
-  if (c.includes('chain')) return `Use $${capital} of the chain's gas token in ${name}'s own app on ${chain} and keep the activity going.`;
-  if (c.includes('payment')) return `Spend $${capital} through ${name}'s payments app on ${chain} and keep the card or account active.`;
-  if (c.includes('privacy')) return `Use $${capital} through ${name}'s private app on ${chain} and keep the shielded balance.`;
-  if (c.includes('basis')) return `Open a $${capital} basis trade on ${name} through ${app}: buy spot and short the same amount on the perpetual, and keep both legs open.`;
-  if (c.includes('liquidity manager')) return `Deposit $${capital} into a ${name} managed vault through ${app} and let it rebalance the range for you.`;
-  if (c.includes('governance')) return `Lock or delegate $${capital} of voting power through ${app} and vote on the proposals that are open.`;
-  if (c.includes('btc')) return `Deposit $${capital} of BTC through ${app} and hold the receipt token it issues.`;
-  if (c.includes('cedefi')) return `Deposit $${capital} into ${name}'s CeDeFi vault through ${app} and keep the position open.`;
-  if (c.includes('otc')) return `Fill a $${capital} OTC order on ${name} through ${app} and settle it on-chain.`;
-  if (c.includes('card')) return `Load $${capital} onto the ${name} card through ${app} and spend it so the account stays active.`;
-  if (c.includes('cex') || c === 'centralized exchange') return `Open an account with ${name} through its own app and deposit $${capital} to trade.`;
-  return `Deposit $${capital} of USDC into ${name} through ${app} and keep the position open.`;
+  return fill(catTemplate((p.category ?? '').toLowerCase(), 'main'), p, capital, chain);
 }
 
 /** The category's second qualifying action: a different interaction from the first. */
 function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  const app = `${name}'s own app on ${chain}`;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Borrow $${Math.max(10, Math.round(capital / 5))} against the supply on ${app}, then repay it the same week.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Swap $${Math.max(10, Math.round(capital / 5))} through ${name}'s main pool on ${app}.`;
-  if (c.includes('bridge')) return `Bridge a second, smaller amount back through ${app} so the route is used both ways.`;
-  if (c.includes('staking') || c.includes('restak')) return `Claim or restake the staking rewards on ${app} once they appear.`;
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `Close the first trade on ${app} and open a second one half its size.`;
-  if (c.includes('prediction')) return `Settle the first market on ${app} and place a second, smaller position.`;
-  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `Move $${Math.max(10, Math.round(capital / 5))} between two ${name} vaults on ${app}.`;
-  if (c.includes('stable')) return `Redeem a small part of the stable position on ${app}, then deposit it back.`;
-  if (c.includes('rwa')) return `Claim the yield the asset paid on ${app} and reinvest it in the same asset.`;
-  if (c.includes('insurance')) return `File a test claim for a covered event on ${app} and follow it to a decision.`;
-  if (c.includes('basis')) return `Rebalance the two legs on ${app} when the funding rate flips against the trade.`;
-  if (c.includes('liquidity manager')) return `Claim the rebalancing fees ${name} earned on ${app}.`;
-  if (c.includes('governance')) return `Vote on a second proposal on ${app} once it opens.`;
-  if (c.includes('btc')) return `Move a small amount of the receipt token on ${app} so the position is used, not just held.`;
-  if (c.includes('cedefi')) return `Claim the vault yield ${name} paid on ${app}.`;
-  if (c.includes('otc')) return `Fill a second, smaller OTC order on ${app}.`;
-  if (c.includes('card')) return `Spend a small amount through the card on ${app}.`;
-  if (c.includes('cex')) return `Place a second, smaller trade on ${app}.`;
-  return `Make a second, smaller deposit of $${Math.max(10, Math.round(capital / 5))} on ${app}.`;
+  return fill(catTemplate((p.category ?? '').toLowerCase(), 'second'), p, capital, chain);
 }
 
 /** The category's weekly qualifying action: the one interaction that keeps the position
- *  counting, repeated every week. A generic "do something each week" names four different
- *  actions — a deposit, a borrow, a swap, a vote — and for most protocols three of them make
- *  no sense: a borrow is meaningless for a vault, a vote for a lending pool. This names the
- *  action that fits this protocol's own category, so the reader knows exactly what to repeat. */
+ *  counting, repeated every week — the action that fits this protocol's own category,
+ *  so the reader knows exactly what to repeat. */
 function weeklyActionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  const app = `${name}'s own app on ${chain}`;
-  const small = Math.max(10, Math.round(capital / 5));
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Top up the supply by $${small} on ${app} each week so the position keeps growing.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Collect the pool fees on ${app} each week and add them back to the position.`;
-  if (c.includes('bridge')) return `Bridge $${small} through ${app} each week, alternating direction so the route stays active.`;
-  if (c.includes('staking') || c.includes('restak')) return `Claim or restake the staking rewards on ${app} once a week.`;
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `Open and close one small hedged trade a week on ${app}.`;
-  if (c.includes('prediction')) return `Place one small market position a week on ${app}.`;
-  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `Claim the vault yield on ${app} each week and redeposit it into the same vault.`;
-  if (c.includes('stable')) return `Top up the stable position by $${small} on ${app} each week.`;
-  if (c.includes('rwa')) return `Top up the position by $${small} on ${app} each week so the holding keeps growing.`;
-  if (c.includes('insurance')) return `Renew or top up the cover on ${app} each week while the policy runs.`;
-  if (c.includes('chain')) return `Make one small transaction in ${name}'s own app on ${chain} each week.`;
-  if (c.includes('payment')) return `Spend $${small} through ${name}'s payments app on ${chain} each week.`;
-  if (c.includes('privacy')) return `Refresh the shielded balance through ${name}'s private app on ${chain} each week.`;
-  if (c.includes('basis')) return `Check the funding rate on ${app} each week and rebalance the legs when it flips.`;
-  if (c.includes('liquidity manager')) return `Claim the vault fees on ${app} each week and add them back to the position.`;
-  if (c.includes('governance')) return `Vote on each new proposal on ${app} every week while the position is locked.`;
-  if (c.includes('btc')) return `Top up the BTC deposit by $${small} on ${app} each week so the position keeps growing.`;
-  if (c.includes('cedefi')) return `Claim the vault yield on ${app} each week and redeposit it into the same vault.`;
-  if (c.includes('otc')) return `Place one small OTC order a week on ${app}.`;
-  if (c.includes('card')) return `Spend $${small} through the ${name} card on ${chain} each week.`;
-  if (c.includes('cex')) return `Make one small trade a week on ${app}.`;
-  return `Deposit $${small} of USDC into ${name} through ${app} each week so the position keeps qualifying.`;
+  return fill(catTemplate((p.category ?? '').toLowerCase(), 'weekly'), p, capital, chain);
 }
 
 /** The category's exit step: how to unwind this protocol's own positions, in the order
  *  that does not strand funds — repay before withdrawing a loan, close the short leg
- *  before selling the spot leg of a basis trade, redeem before withdrawing a vault.
- *  The farm log stays in every version: the step is specific about the exit and keeps the
- *  record-keeping, instead of repeating one generic line on all 342 rows. */
+ *  before selling the spot leg of a basis trade, redeem before withdrawing a vault. */
 function exitActionFor(p: SnapshotProtocol, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  const app = `${name}'s own app on ${chain}`;
-  const log = `and write the wallet, the dates and every transaction in a farm log.`;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `To exit, repay the borrow first, then withdraw the supply — in that order — ${log}`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `To exit, claim the pool fees first, then remove the liquidity, ${log}`;
-  if (c.includes('bridge')) return `To exit, bridge the funds back to the chain you started on, ${log}`;
-  if (c.includes('staking') || c.includes('restak')) return `To exit, claim the staking rewards first, then unstake, ${log}`;
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `To exit, close every open trade first, then withdraw the margin, ${log}`;
-  if (c.includes('prediction')) return `To exit, settle or close every open market position, then withdraw, ${log}`;
-  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `To exit, claim the vault yield first, then withdraw from the vault, ${log}`;
-  if (c.includes('stable')) return `To exit, redeem the stable position back to USDC, ${log}`;
-  if (c.includes('rwa')) return `To exit, redeem the yield asset on ${app}, ${log}`;
-  if (c.includes('insurance')) return `To exit, let the cover lapse or cancel the policy, ${log}`;
-  if (c.includes('basis')) return `To exit, close the short leg first, then sell the spot leg, ${log}`;
-  if (c.includes('liquidity manager')) return `To exit, claim the vault fees first, then withdraw from the managed vault, ${log}`;
-  if (c.includes('governance')) return `To exit, unlock the voting power after the vote closes, ${log}`;
-  if (c.includes('btc')) return `To exit, redeem the receipt token for BTC on ${app}, ${log}`;
-  if (c.includes('cedefi')) return `To exit, withdraw from the CeDeFi vault on ${app}, ${log}`;
-  if (c.includes('otc')) return `To exit, cancel any open OTC orders on ${app}, then withdraw, ${log}`;
-  if (c.includes('card')) return `To exit, spend down or withdraw the card balance on ${app}, ${log}`;
-  if (c.includes('cex')) return `To exit, withdraw the balance from ${name} to your own wallet, ${log}`;
-  return `Write the wallet, the dates and every transaction in a farm log, then unwind in reverse order when you exit.`;
+  return fill(catTemplate((p.category ?? '').toLowerCase(), 'exit'), p, 0, chain);
 }
 
 /**

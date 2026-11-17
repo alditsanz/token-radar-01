@@ -1,11 +1,9 @@
 // Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, filters, sort, and a per-protocol detail view with
 // the model's own inputs and the protocol's farm plan. No network: every byte it shows is
-// in data.js.
-//
-// The value model, in one function — the page recomputes a row from the snapshot figures
-// and checks the number board.json carries, so the page's code and the board's data are
-// visibly the same arithmetic:
+// in data.js. The value model, in one function — the page recomputes a row from the snapshot
+// figures and checks the number board.json carries, so the page's code and the board's data
+// are visibly the same arithmetic:
 //
 //   implied = round( tvl_usd x 0.30
 //                  x (1 + clamp(change_7d, -80, 200) / 100 x (growth >= 0 ? 0.8 : 1.2))
@@ -47,8 +45,7 @@
     var age = row.age_days === null || row.age_days === undefined ? MODEL.unknown_age_days : row.age_days;
     var maturity = MODEL.maturity_floor + (Math.log(1 + Math.min(Math.max(age, 0), MODEL.maturity_days)) / Math.log(1 + MODEL.maturity_days)) * MODEL.maturity_range;
     var value = Math.max(1, Math.round(row.tvl_usd * MODEL.base_multiple * growthMult * maturity));
-    if (row.tier === 'copy') return { value: value, growthMult: growthMult, maturity: maturity, copy: true };
-    return { value: value, growthMult: growthMult, maturity: maturity, copy: false };
+    return { value: value, growthMult: growthMult, maturity: maturity, copy: row.tier === 'copy' };
   }
   // Why this row ranks where it does, in one line a reader can check.
   function reasonFor(row) {
@@ -79,27 +76,23 @@
   }
 
   function readHash() {
-    var hash = window.location.hash.replace(/^#/, '');
-    if (!hash) return;
-    var params = new URLSearchParams(hash);
-    if (params.get('q')) state.q = params.get('q');
-    if (params.get('category')) state.category = params.get('category');
-    if (params.get('chain')) state.chain = params.get('chain');
-    if (params.get('growth')) state.growth = params.get('growth');
-    if (params.get('tab')) state.tab = params.get('tab');
-    if (params.get('p')) state.selected = params.get('p');
+    var params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    [['q', 'q'], ['category', 'category'], ['chain', 'chain'], ['growth', 'growth'], ['tab', 'tab'], ['p', 'selected']].forEach(function (pair) {
+      var v = params.get(pair[0]);
+      if (v) state[pair[1]] = v;
+    });
   }
   function writeHash() {
     var params = new URLSearchParams();
-    if (state.q) params.set('q', state.q);
-    if (state.category !== 'all') params.set('category', state.category);
-    if (state.chain !== 'all') params.set('chain', state.chain);
-    if (state.growth !== 'all') params.set('growth', state.growth);
-    if (state.tab !== 'launch') params.set('tab', state.tab);
-    if (state.selected) params.set('p', state.selected);
+    var set = function (k, v, d) { if (v && v !== d) params.set(k, v); };
+    set('q', state.q);
+    set('category', state.category, 'all');
+    set('chain', state.chain, 'all');
+    set('growth', state.growth, 'all');
+    set('tab', state.tab, 'launch');
+    set('p', state.selected);
     var next = params.toString();
-    if (next) window.history.replaceState(null, '', '#' + next);
-    else window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    window.history.replaceState(null, '', next ? '#' + next : window.location.pathname + window.location.search);
   }
 
   function baseRows() {
@@ -118,16 +111,19 @@
       return hay.indexOf(q) >= 0;
     });
   }
+  // One accessor per sortable column; rows without the value sort to the end in either direction.
+  var SORT_KEY = {
+    name: function (r) { return r.name.toLowerCase(); },
+    tvl: function (r) { return r.tvl_usd; },
+    growth: function (r) { return r.change_7d === null ? -Infinity : r.change_7d; },
+    age: function (r) { return r.age_days === null ? Infinity : r.age_days; },
+    mcap: function (r) { return r.mcap_usd === null ? -Infinity : r.mcap_usd; },
+    implied: function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }
+  };
   function sortedRows(list) {
-    var key = state.sort;
+    var get = SORT_KEY[state.sort] || SORT_KEY.implied;
     return list.slice().sort(function (a, b) {
-      var av, bv;
-      if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
-      else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
-      else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
-      else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
-      else if (key === 'mcap') { av = a.mcap_usd === null ? -Infinity : a.mcap_usd; bv = b.mcap_usd === null ? -Infinity : b.mcap_usd; }
-      else { av = a.implied_value_usd === undefined ? (a.mcap_usd || 0) : a.implied_value_usd; bv = b.implied_value_usd === undefined ? (b.mcap_usd || 0) : b.implied_value_usd; }
+      var av = get(a), bv = get(b);
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
@@ -162,27 +158,18 @@
     );
   }
 
+  function selectField(id, label, options, value, onChange) {
+    var sel = el('select', { id: id, 'aria-label': label },
+      options.map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === value ? 'selected' : null }); }));
+    sel.addEventListener('change', function () { onChange(sel.value); writeHash(); render(); });
+    return el('div', { class: 'field' }, el('label', { for: id, text: label }), sel);
+  }
+
   function controls() {
     var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).sort();
     var chains = Array.from(new Set(DATA.rows.reduce(function (acc, r) { return acc.concat(r.chains || []); }, []))).sort();
     var search = el('input', { type: 'search', id: 'q', placeholder: 'Search name, category or chain', value: state.q, 'aria-label': 'Search the board' });
     search.addEventListener('input', function () { state.q = search.value; writeHash(); render(); });
-    var cat = el('select', { id: 'category', 'aria-label': 'Filter by category' },
-      el('option', { value: 'all', text: 'All categories' }),
-      categories.map(function (c) { return el('option', { value: c, text: c, selected: c === state.category ? 'selected' : null }); })
-    );
-    cat.addEventListener('change', function () { state.category = cat.value; writeHash(); render(); });
-    var chain = el('select', { id: 'chain', 'aria-label': 'Filter by chain' },
-      el('option', { value: 'all', text: 'All chains' }),
-      chains.map(function (c) { return el('option', { value: c, text: c, selected: c === state.chain ? 'selected' : null }); })
-    );
-    chain.addEventListener('change', function () { state.chain = chain.value; writeHash(); render(); });
-    var growth = el('select', { id: 'growth', 'aria-label': 'Filter by seven-day growth' },
-      el('option', { value: 'all', text: 'Any 7d growth' }),
-      el('option', { value: 'up', text: 'Growing (7d ≥ 0%)', selected: state.growth === 'up' ? 'selected' : null }),
-      el('option', { value: 'down', text: 'Shrinking (7d < 0%)', selected: state.growth === 'down' ? 'selected' : null })
-    );
-    growth.addEventListener('change', function () { state.growth = growth.value; writeHash(); render(); });
     function tabBtn(tab, label) {
       return el('button', { type: 'button', 'aria-pressed': state.tab === tab ? 'true' : 'false', text: label, onclick: function () { state.tab = tab; render(); } });
     }
@@ -191,9 +178,9 @@
     var tabLabel = state.tab === 'live' ? 'live-token protocols' : state.tab === 'copy' ? 'copies' : 'launches';
     return el('div', { class: 'controls' },
       el('div', { class: 'field grow' }, el('label', { for: 'q', text: 'Search' }), search),
-      el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), cat),
-      el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chain),
-      el('div', { class: 'field' }, el('label', { for: 'growth', text: '7d growth' }), growth),
+      selectField('category', 'Category', [['all', 'All categories']].concat(categories.map(function (c) { return [c, c]; })), state.category, function (v) { state.category = v; }),
+      selectField('chain', 'Chain', [['all', 'All chains']].concat(chains.map(function (c) { return [c, c]; })), state.chain, function (v) { state.chain = v; }),
+      selectField('growth', '7d growth', [['all', 'Any 7d growth'], ['up', 'Growing (7d ≥ 0%)'], ['down', 'Shrinking (7d < 0%)']], state.growth, function (v) { state.growth = v; }),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
       el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' })
@@ -217,6 +204,16 @@
     ));
   }
 
+  function chainText(r) {
+    return r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain';
+  }
+  function nameCell(r, reason) {
+    return el('div', { class: 'name' },
+      el('b', { text: r.name }),
+      el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + chainText(r) }),
+      el('div', { class: 'reason', text: reason }));
+  }
+
   function boardTable() {
     var list = sortedRows(filteredRows());
     if (list.length === 0) return emptyPanel();
@@ -235,11 +232,7 @@
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
         el('td', { class: 'num', text: String(r.rank) }),
-        el('td', null, el('div', { class: 'name' },
-          el('b', { text: r.name }),
-          el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }),
-          el('div', { class: 'reason', text: reasonFor(r) })
-        )),
+        el('td', null, nameCell(r, reasonFor(r))),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
@@ -282,7 +275,7 @@
     list.forEach(function (r) {
       tbody.appendChild(el('tr', null,
         el('td', { class: 'num', text: 'live' }),
-        el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }), el('div', { class: 'reason', text: fmtUsd(r.tvl_usd) + ' TVL · ' + fmtPct(r.change_7d) + ' in 7d' }))),
+        el('td', null, nameCell(r, fmtUsd(r.tvl_usd) + ' TVL · ' + fmtPct(r.change_7d) + ' in 7d')),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
         el('td', { class: 'num', text: fmtUsd(r.mcap_usd) }),

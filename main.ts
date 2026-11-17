@@ -1,19 +1,13 @@
 // Token Radar (radar-2): the token-radar-01 entry, Node 22, standard library only.
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
-// scores every pre-token protocol with the model in lib/model.ts — the whole watchlist plus
-// every other pre-token protocol, launches ranked by implied value and wrapped, staked and
-// bridged copies at the bottom — writes the ranked board to /output/board.json, writes the
-// dashboard's data beside the page as data.js, copies this repository's dashboard/ and
-// screenshots/ to /output, and writes /output/dossier.json with the vendored make.fun library.
-//
-// The dashboard is a static page, no framework and no network: dashboard/index.html,
-// dashboard/app.css and dashboard/app.js read the data.js this program writes. The page
-// recomputes each row's implied value from the snapshot figures with the same model, so the
-// screenshots and the code agree.
-//
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
+// Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
+// pre-token protocol with the model in lib/model.ts — the whole watchlist plus every other
+// pre-token protocol, launches ranked by implied value and wrapped, staked and bridged copies
+// at the bottom — writes the ranked board to /output/board.json, the dashboard's data beside
+// the page as data.js, copies dashboard/ and screenshots/ to /output, and writes
+// /output/dossier.json with the vendored make.fun library. The page recomputes each row's
+// implied value from the snapshot figures with the same model, so the screenshots and the
+// code agree. Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,7 +17,7 @@ import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-/** The scorer's own caps (reference/gate.json): the text cap shapes the bytes, the rest refuse. */
+/** The scorer's own caps: the text cap shapes the bytes, the rest refuse. */
 const TEXT_MAX_BYTES = 65_536;
 const SCREENSHOT_CAPS = { max: 4, max_bytes: 524_288 };
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
