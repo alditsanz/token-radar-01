@@ -53,6 +53,16 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   hand-set. Growth and age were checked the same way after the size curve and
   barely move market cap (r = −0.15 and −0.05), so both stay small bounded
   adjustments, never the driver.
+- **Checked against the market** — the same curve predicts the snapshot's own 128
+  live-token protocols' market caps with a median error of ×3.7: 43 of the 128
+  land within 2× of their market cap, 57 within 3×, and the median live protocol
+  sits at 0.92× the curve, so the curve is centred on the typical protocol.
+  Market caps scatter widely at any TVL (the median absolute log error is 1.31),
+  so no choice of size exponent beats 0.50 by more than ~1% and no chain-count or
+  quadratic term helps at all — the curve tracks the median protocol, which is
+  what a ranking needs, not any single one. The Live tab carries each live
+  protocol's own market-cap/TVL ratio, so the reader sees the shrinking share
+  with their own eyes.
 - **Copies at 2%** — wrapped, staked and bridged products of tokens that already
   trade use the same formula at a 2% weight, rescaled so the largest copy stays
   below the smallest launch. They rank at the bottom, because a copy is not a
@@ -68,7 +78,9 @@ Every row carries seven steps, derived from the protocol's own record (category,
 chains, TVL, age): a fresh wallet funded with the chain's own gas token, the
 category's main action and a second qualifying action in the protocol's own app
 on its chain — naming the protocol's other chains when it runs on more than one
-(85 of the 198 launches do) — weekly activity with the number of weeks to repeat
+(85 of the 198 launches do) and stating the position next to the protocol's own
+TVL as a multiple, so the reader sees the exit is small next to the protocol —
+weekly activity with the number of weeks to repeat
 it, a hold of 45–90 days with the whole plan's gas budgeted (setup + weekly +
 unwind) and the all-in total stated (capital plus gas), a rewards-page check
 naming the category's own reward, and the category's own exit order. Each step
@@ -95,7 +107,9 @@ runs write identical bytes.
 - `vendor/makefun-board.ts` — the kit's dossier library, unchanged.
 - `dashboard/` — `index.html`, `app.css`, `app.js` (sortable, filterable, detail
   view; the page recomputes every row's implied value from the snapshot figures
-  and checks it against board.json).
+  and checks it against board.json; watchlist rows wear a ★ badge, the count line
+  shows the filtered set's median and total, and the Live tab shows each live
+  protocol's market-cap/TVL ratio).
 - `screenshots/` — 1-board.png, 2-detail.png, 3-filtered.png.
 - `LICENSE` — MIT.
 

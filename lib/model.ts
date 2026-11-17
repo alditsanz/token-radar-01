@@ -624,6 +624,13 @@ function rewardFor(c: string): string {
   return 'points';
 }
 
+/** A TVL in the short form the farm plan uses: $2.76B, $499.1M, $5.2M. */
+function tvlText(tvl: number): string {
+  if (tvl >= 1e9) return `$${(tvl / 1e9).toFixed(2)}B`;
+  if (tvl >= 1e6) return `$${(tvl / 1e6).toFixed(1)}M`;
+  return `$${Math.round(tvl / 1e3)}K`;
+}
+
 /** How much of the chain's gas token one farm wallet needs to start, in that token. */
 function gasTokenFor(chain: string): string {
   const c = chain.toLowerCase();
@@ -672,7 +679,9 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * (see rewardFor), so every step carries a number the reader can check, not a slogan.
  * The main step also names the protocol's other chains when it runs on more than
  * one, the weekly step says how many weeks to repeat it, and the hold step states
- * the all-in total — capital plus gas — so the reader knows the whole outlay.
+ * the all-in total — capital plus gas — so the reader knows the whole outlay. The
+ * main step also states the position next to the protocol's own TVL, as a multiple,
+ * so the reader sees the exit is small next to the protocol it leaves.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -728,6 +737,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     const more = p.chains.length > 3 ? ` and ${p.chains.length - 3} more` : '';
     steps[1]!.text += ` It also runs on ${others}${more}; farm it on ${chain}, where its main app lives.`;
   }
+  // The position next to the protocol's own size: the smallest position is still
+  // 10,000x smaller than the smallest protocol's TVL ($100 into $5M), so the exit
+  // is always small next to the protocol — stated as a multiple the reader can check.
+  steps[1]!.text += ` Its ${tvlText(p.tvl_usd)} TVL is about ${Math.round(p.tvl_usd / capital).toLocaleString('en-US')}× your $${capital} position, so unwinding it is small next to the protocol.`;
   return steps;
 }
 

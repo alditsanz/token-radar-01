@@ -48,6 +48,8 @@ tbody tr:hover{background:#f6f9fb}
 tbody tr[data-selected="true"]{background:var(--emerald-soft)}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .name b{display:block;font-size:14.5px}
+.name-row{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.wl{font-size:11px;font-weight:700;color:var(--emerald);background:var(--emerald-soft);border-radius:999px;padding:1px 8px;white-space:nowrap}
 .name .sub,.sub{color:var(--muted);font-size:12.5px}
 .reason{color:var(--ink-soft);font-size:12.5px;margin-top:1px}
 .implied{display:flex;align-items:center;gap:8px;justify-content:flex-end}

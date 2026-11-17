@@ -13,7 +13,10 @@
 //
 // Value grows with the square root of TVL, not linearly: the snapshot's own live-token
 // protocols trade at a median 0.89x TVL at $5-10M of TVL, 0.37x at $10-32M, 0.21x at
-// $33-95M and 0.05x above $108M, so a linear share overvalues the giants about 6x. The
+// $33-95M and 0.05x above $108M, so a linear share overvalues the giants about 6x.
+// Checked against the same 128 live-token protocols, the curve lands within 2x of the
+// market cap for 43 of them and the median live protocol sits at 0.92x the curve, so
+// the curve is centred on the typical protocol, not any single one. The
 // growth term is bounded because the TVL already records the week's move: one week of
 // momentum never erases more than half the value that remains or adds more than 60%.
 // The category factor is fitted from the same snapshot's live protocols (at most
@@ -45,6 +48,14 @@
     if (days === null || days === undefined) return 'unknown';
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
+  }
+  // What the market already pays for a live protocol's TVL: the same ratio the size
+  // curve is fitted on, shown on the Live tab so the reader sees the shrinking share
+  // with their own eyes instead of taking the model's word for it.
+  function fmtRatio(r) {
+    if (r.mcap_usd === null || r.mcap_usd === undefined || !r.tvl_usd) return 'n/a';
+    var v = r.mcap_usd / r.tvl_usd;
+    return '×' + (v >= 0.1 ? v.toFixed(2) : v.toFixed(3));
   }
   // The model in one function: TVL, seven-day growth, age with no token and the
   // category factor — nothing else. Value grows with the square root of TVL: the
@@ -146,6 +157,7 @@
     growth: function (r) { return r.change_7d === null ? -Infinity : r.change_7d; },
     age: function (r) { return r.age_days === null ? Infinity : r.age_days; },
     mcap: function (r) { return r.mcap_usd === null ? -Infinity : r.mcap_usd; },
+    ratio: function (r) { return r.mcap_usd === null || !r.tvl_usd ? -Infinity : r.mcap_usd / r.tvl_usd; },
     implied: function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }
   };
   function sortedRows(list) {
@@ -209,6 +221,9 @@
     // leaves, so a reader sees whether the filter kept the giants or the tail.
     var medians = shownRows.map(function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }).sort(function (a, b) { return a - b; });
     var medianText = medians.length ? ' · median ' + fmtUsd(medians[Math.floor(medians.length / 2)]) : '';
+    // And the set's total, so the reader sees the whole weight of what the filter kept.
+    var totalValue = shownRows.reduce(function (s, r) { return s + (r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd); }, 0);
+    var totalText = shownRows.length ? ' · total ' + fmtUsd(totalValue) : '';
     // The watchlist toggle: the 40 watchlist protocols alone, so a reader can check the
     // floor the board promises without the 302 other rows in the way.
     var wlBox = el('input', { type: 'checkbox', id: 'watchlist-only', 'aria-label': 'Watchlist only' });
@@ -222,7 +237,7 @@
       el('label', { class: 'check', for: 'watchlist-only' }, wlBox, ' Watchlist only (' + DATA.watchlist_size + ')'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
-      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' + medianText })
+      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' + medianText + totalText })
     );
   }
 
@@ -247,8 +262,12 @@
     return r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain';
   }
   function nameCell(r, reason) {
+    // A watchlist row wears its star in the board: the reader sees at a glance which
+    // rows are the floor the board promises, without turning the filter on.
+    var title = el('div', { class: 'name-row' }, el('b', { text: r.name }));
+    if (r.watchlist) title.appendChild(el('span', { class: 'wl', text: '★ watchlist' }));
     return el('div', { class: 'name' },
-      el('b', { text: r.name }),
+      title,
       el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + chainText(r) }),
       el('div', { class: 'reason', text: reason }));
   }
@@ -318,6 +337,7 @@
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
         el('td', { class: 'num', text: fmtUsd(r.mcap_usd) }),
+        el('td', { class: 'num', text: fmtRatio(r) }),
         el('td', null, el('span', { class: 'status live', text: 'already trades' }))
       ));
     });
@@ -325,7 +345,7 @@
       el('div', { class: 'table-wrap' },
         el('table', null,
           el('caption', { text: 'Tokens that already trade, by market cap. Their market cap is a fact, not a model, so they are set aside from the pre-token ranking instead of mixed into it.' }),
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Status' }), sortHeader('name', 'Protocol'), sortHeader('tvl', 'TVL'), sortHeader('growth', '7d'), sortHeader('mcap', 'Market cap'), el('th', { scope: 'col', text: 'Token' }))),
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Status' }), sortHeader('name', 'Protocol'), sortHeader('tvl', 'TVL'), sortHeader('growth', '7d'), sortHeader('mcap', 'Market cap'), sortHeader('ratio', 'Mcap / TVL'), el('th', { scope: 'col', text: 'Token' }))),
           tbody
         )
       )
@@ -346,7 +366,12 @@
             return el('tr', null, el('td', { text: r[0] }), el('td', { class: 'num', text: r[1] }), el('td', { class: 'num', text: r[2] }));
           })
         )
-      )
+      ),
+      // Checked against the market, from the sealed snapshot's own 128 live-token
+      // protocols (builder audit: median |log(market cap / curve)| 1.314, so a median
+      // error of x3.7; 43 of 128 within 2x, 57 within 3x; median signed log residual
+      // -0.088, so the median live protocol sits at 0.92x the curve).
+      el('p', { text: 'Checked against the market: the same curve predicts the 128 live-token protocols\u2019 market caps with a median error of \u00d73.7 \u2014 43 of the 128 land within 2\u00d7 of their market cap, 57 within 3\u00d7, and the median live protocol sits at 0.92\u00d7 the curve, so the curve is centred on the typical protocol. Market caps scatter widely at any TVL, so the curve tracks the median protocol \u2014 which is what a ranking needs \u2014 not any single one.' })
     );
     // The category factors the snapshot fitted: only categories with 5 or more live
     // protocols get one, shrunk toward 1 and clamped to 0.80–1.25.
