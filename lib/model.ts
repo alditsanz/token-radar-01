@@ -9,16 +9,46 @@
 //
 // Implied value follows only from the snapshot's own figures:
 //
-//   implied = max(1, round(tvl_usd x 0.30 x growthMult x maturityMult))
+//   implied = max(1, round(tvl_usd x 0.30 x sizeMult x growthMult x maturityMult))
+//   sizeMult     = sqrt(size_ref_usd / tvl_usd), size_ref_usd the snapshot's own
+//                  floor_usd ($50M here)
+//                  (a launch is worth a share of the value already locked in, but the
+//                   share shrinks as the protocol grows: the snapshot's own 128
+//                   live-token protocols trade at a median 0.89x TVL at $5-10M of TVL,
+//                   0.37x at $10-32M, 0.21x at $33-95M and 0.05x above $108M — a
+//                   17x fall across the range. A log-log fit of market cap on TVL
+//                   gives a slope of 0.52 (0.58 after trimming 10 outliers, 0.42 from
+//                   the quartile medians), so value grows with the square root of
+//                   TVL, not linearly: the old linear 0.30x overvalued the giants
+//                   about 6x and undervalued the smallest protocols about 3x. The
+//                   0.5 exponent is the robust middle of the three fits, and the
+//                   $50M anchor is the snapshot's own floor, not a chosen number)
 //   growthMult   = min(1.6, max(0.5, 1 + clamp(change_7d, -80, 200) / 100 x (0.8 up / 1.2 down))), null counts as 0
 //                  (a shrinking TVL hurts more than a growing one helps; the term is bounded
 //                   because the TVL already records the week's move — one bad week never erases
 //                   more than half the value that remains, and one good week never adds more than
 //                   60% on top of a TVL that already includes the spike: the two most distorted
 //                   rows of the old unbounded term were a protocol down 73% in a week, valued at
-//                   13% of its remaining TVL, and one up 4,448% in a week, valued at 260%)
+//                   13% of its remaining TVL, and one up 4,448% in a week, valued at 260%.
+//                   Checked against the live set after the size curve, 7d growth barely
+//                   moves market cap (r = -0.15, n = 128), so the term stays a small
+//                   bounded adjustment, never the driver)
 //   maturityMult = 0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)
-//                  (age_days unknown: 365; the curve rises fast, then plateaus)
+//                  (age_days unknown: 365; the curve rises fast, then plateaus.
+//                   Checked the same way, age barely moves market cap either
+//                   (r = -0.05, n = 95), so the term stays as it was: a small
+//                   bounded adjustment, not a claim that older always means dearer)
+//   categoryMult = the category's factor, fitted from the snapshot's own
+//                  live-token protocols and no larger than 0.80x-1.25x (see
+//                  categoryFactors): for each category with at least 5 live
+//                  rows, the median of log(market cap / size curve), centred
+//                  on the global median and shrunk toward 1 by n/(n+10).
+//                  Lending 0.80x, Yield 0.84x, RWA 1.14x, Basis Trading
+//                  1.19x; every other category 1.00x. Categories with fewer
+//                  live rows get no factor — one live row is noise, not a
+//                  signal (Prediction Market's single live row sits 576x off
+//                  the curve). The gaps that remain after the size curve are
+//                  small, and the factor stays small with them.
 //
 // A copy's implied value is the same formula at a 2% weight, rescaled so the largest copy
 // stays below the smallest launch. The dashboard states the formula and recomputes every row
@@ -51,6 +81,8 @@ export interface Snapshot {
 /** The model's constants, as the dashboard states them. */
 export interface ModelConstants {
   base_multiple: number;
+  size_ref_usd: number;
+  size_exponent: number;
   growth_weight_up: number;
   growth_weight_down: number;
   growth_floor: number;
@@ -62,10 +94,14 @@ export interface ModelConstants {
   maturity_days: number;
   unknown_age_days: number;
   copy_weight: number;
+  /** Per-category value factors, fitted from the snapshot at build time (see categoryFactors). Absent on the bare MODEL constant. */
+  category_factors?: Record<string, number>;
 }
 
 export const MODEL: ModelConstants = {
   base_multiple: 0.3,
+  size_ref_usd: 50_000_000,
+  size_exponent: 0.5,
   growth_weight_up: 0.8,
   growth_weight_down: 1.2,
   growth_floor: -80,
@@ -80,7 +116,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -117,6 +153,8 @@ export interface BoardRow {
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
+    size_multiplier: number;
+    category_multiplier: number;
     age_days: number | null;
   };
   farm_steps: string[];
@@ -137,6 +175,8 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  size_multiplier: number;
+  category_multiplier: number;
   tier: Tier;
   watchlist: boolean;
   farm_steps: string[];
@@ -193,8 +233,8 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The three multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+/** The multipliers and the implied value one protocol gets under `model`. */
+export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -205,9 +245,57 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const ageForModel = age ?? model.unknown_age_days;
   const cappedAge = Math.min(Math.max(ageForModel, 0), model.maturity_days);
   const maturityMult = model.maturity_floor + (Math.log(1 + cappedAge) / Math.log(1 + model.maturity_days)) * model.maturity_range;
+  // Square-root size: value grows with the square root of TVL, anchored on the
+  // snapshot's own floor — the market pays a shrinking share as protocols grow.
+  const sizeMult = Math.pow(model.size_ref_usd / Math.max(protocol.tvl_usd, 1), model.size_exponent);
+  const catMult = model.category_factors?.[protocol.category ?? ''] ?? 1;
   const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
-  return { implied, growthPct, growthMult, maturityMult, age };
+  const implied = Math.max(1, Math.round(base * sizeMult * growthMult * maturityMult * catMult));
+  return { implied, growthPct, growthMult, maturityMult, sizeMult, catMult, age };
+}
+
+/** The per-category value factor, fitted from the snapshot's own live-token protocols:
+ *  for each category with at least 5 live rows, the median of log(market cap /
+ *  the size curve's prediction), centred on the global median so the factors are
+ *  relative to the typical protocol, shrunk toward 1 by n/(n+10) and clamped to
+ *  0.80-1.25. Categories with fewer live rows get no factor: a single live row
+ *  is noise, not a signal — Prediction Market's one live row sits 576x off the
+ *  curve, Token Locker's two 34x. No protocol name and no category is ever
+ *  hand-set: the map is computed from the snapshot on every run. */
+export function categoryFactors(snapshot: Snapshot, model: ModelConstants): Record<string, number> {
+  const live = snapshot.protocols.filter((p): p is SnapshotProtocol & { mcap_usd: number } => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  if (live.length === 0) return {};
+  const resid = live.map((p) => {
+    const pred = model.base_multiple * Math.sqrt(model.size_ref_usd * p.tvl_usd);
+    return { c: p.category ?? '', r: Math.log(p.mcap_usd / pred) };
+  });
+  const all = resid.map((x) => x.r).sort((a, b) => a - b);
+  const global = all[Math.floor(all.length / 2)]!;
+  const byCat = new Map<string, number[]>();
+  for (const x of resid) {
+    const arr = byCat.get(x.c);
+    if (arr !== undefined) arr.push(x.r);
+    else byCat.set(x.c, [x.r]);
+  }
+  const out: Record<string, number> = {};
+  for (const [c, rs] of byCat) {
+    if (rs.length < 5) continue;
+    rs.sort((a, b) => a - b);
+    const med = rs[Math.floor(rs.length / 2)]! - global;
+    const shrunk = Math.exp(med * (rs.length / (rs.length + 10)));
+    const clamped = Math.min(1.25, Math.max(0.8, shrunk));
+    const rounded = Math.round(clamped * 1e4) / 1e4;
+    if (rounded !== 1) out[c] = rounded;
+  }
+  return out;
+}
+
+/** The model as this snapshot scores with: the size anchor is the snapshot's own
+ *  floor_usd, and the category factors are fitted from its live rows. */
+function effectiveModel(snapshot: Snapshot, model: ModelConstants): ModelConstants {
+  const m: ModelConstants = { ...model, size_ref_usd: snapshot.floor_usd };
+  if (model.category_factors === undefined) m.category_factors = categoryFactors(snapshot, m);
+  return m;
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -235,6 +323,7 @@ export function isLaunch(p: SnapshotProtocol): boolean {
 }
 
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+  const m = effectiveModel(snapshot, model);
   const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const launches = new Map<string, SnapshotProtocol>();
   const copies = new Map<string, SnapshotProtocol>();
@@ -253,7 +342,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   }
 
   const scoredLaunches = [...launches.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model);
+    const v = impliedValue(p, snapshot.as_of, m);
     return { p, ...v };
   });
   scoredLaunches.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -261,8 +350,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   const copyCap = Math.max(1, Math.floor(minLaunch / 2));
 
   const scoredCopies = [...copies.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model);
-    return { p, ...v, raw: v.implied * model.copy_weight };
+    const v = impliedValue(p, snapshot.as_of, m);
+    return { p, ...v, raw: v.implied * m.copy_weight };
   });
   const maxRaw = scoredCopies.reduce((m, s) => Math.max(m, s.raw), 0);
   scoredCopies.sort((a, b) => b.raw - a.raw || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -280,7 +369,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   return rows;
 }
 
-function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; age: number | null }, implied: number, tier: Tier): BoardRow {
+function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier): BoardRow {
   return {
     rank: 0,
     slug: p.slug,
@@ -302,6 +391,8 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
       growth_pct: v.growthPct,
       growth_multiplier: Math.round(v.growthMult * 1e4) / 1e4,
       maturity_multiplier: Math.round(v.maturityMult * 1e4) / 1e4,
+      size_multiplier: Math.round(v.sizeMult * 1e4) / 1e4,
+      category_multiplier: Math.round(v.catMult * 1e4) / 1e4,
       age_days: v.age,
     },
     farm_steps: farmSteps(p, v.age).map(stepText),
@@ -579,6 +670,9 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * wallet with the chain's own gas token, the hold step budgets the whole plan's gas
  * (setup + weekly + unwind), and the rewards step names the category's own reward
  * (see rewardFor), so every step carries a number the reader can check, not a slogan.
+ * The main step also names the protocol's other chains when it runs on more than
+ * one, the weekly step says how many weeks to repeat it, and the hold step states
+ * the all-in total — capital plus gas — so the reader knows the whole outlay.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -588,7 +682,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const weeks = Math.max(1, Math.round(hold / 7));
   const totalGas = gas * (2 + weeks);
   const reward = rewardFor((p.category ?? '').toLowerCase());
-  return [
+  const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet on ${chain} that holds only the funds you plan to farm, fund it with about ${gasTokenFor(chain)} for gas, and keep its seed phrase offline.`,
       cost: `under $${gas + 2} of gas for the first transaction on ${chain}`,
@@ -605,13 +699,13 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: weeklyActionFor(p, capital, chain),
+      text: `${weeklyActionFor(p, capital, chain)} Repeat it for about ${weeks} weeks, until the ${hold}-day hold is done.`,
       cost: `about $${gas} of gas a week on ${chain}`,
       time: '10 minutes a week',
     },
     {
       text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position; budget about $${totalGas} of gas for the whole plan on ${chain} — about $${gas} to set up, $${gas} a week for ${weeks} weeks, $${gas} to unwind`,
+      cost: `the $${capital} stays in the position; budget about $${totalGas} of gas for the whole plan on ${chain} — about $${gas} to set up, $${gas} a week for ${weeks} weeks, $${gas} to unwind. All in, about $${capital + totalGas} is at work ($${capital} in the position plus about $${totalGas} of gas)`,
       time: `${hold} days`,
     },
     {
@@ -625,6 +719,16 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '15 minutes to exit',
     },
   ];
+  // A protocol on several chains is farmed where its main app lives; the reader
+  // still needs to know the other chains exist, so the plan names them instead
+  // of leaving the reader to find them — 85 of the 198 launches run on more
+  // than one chain, up to 45.
+  if (p.chains.length > 1) {
+    const others = p.chains.slice(1, 3).join(', ');
+    const more = p.chains.length > 3 ? ` and ${p.chains.length - 3} more` : '';
+    steps[1]!.text += ` It also runs on ${others}${more}; farm it on ${chain}, where its main app lives.`;
+  }
+  return steps;
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -660,6 +764,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    size_multiplier: row.model.size_multiplier,
+    category_multiplier: row.model.category_multiplier,
     tier: row.tier,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
@@ -668,14 +774,15 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const m = effectiveModel(snapshot, model);
+  const board = buildBoard(snapshot, m);
   const live = liveRows(snapshot);
   const launch = board.filter((r) => r.tier === 'launch').length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
-    model,
+    model: m,
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,

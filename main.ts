@@ -1,4 +1,4 @@
-// Token Radar (radar-3): the token-radar-01 entry, Node 22, standard library only.
+// Token Radar (radar-4): the token-radar-01 entry, Node 22, standard library only.
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the model in lib/model.ts — the whole watchlist plus every other

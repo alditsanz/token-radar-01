@@ -9,18 +9,28 @@ every protocol that records no token (342) by what its launch would be worth, an
 hands in a dashboard a reader can use — board, detail view per protocol, filters,
 and a farm plan for each one.
 
-## The model (radar-3)
+## The model (radar-4)
 
-Implied value follows only from the snapshot's own figures — TVL, seven-day growth
-and age with no token. No protocol name is special-cased:
+Implied value follows only from the snapshot's own figures — TVL, seven-day growth,
+age with no token and category. No protocol name is special-cased:
 
 ```
-implied = round( tvl_usd × 0.30
+implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
                × min(1.6, max(0.5, 1 + clamp(change_7d, -80, 200) / 100 × 0.8 up / 1.2 down))
-               × (0.6 + 0.4 × ln(1 + min(age_days, 1095)) / ln(1 + 1095)) )
+               × (0.6 + 0.4 × ln(1 + min(age_days, 1095)) / ln(1 + 1095))
+               × category factor )
 ```
 
-- **TVL × 0.30** — a launch is worth a share of the value already locked in.
+- **TVL × 0.30, square-root size** — a launch is worth a share of the value
+  already locked in, but the share shrinks as the protocol grows. The snapshot's
+  own 128 live-token protocols trade at a median 0.89× TVL at $5–10M of TVL,
+  0.37× at $10–32M, 0.21× at $33–95M and 0.05× above $108M — a 17× fall. A
+  log-log fit of market cap on TVL gives a slope of 0.52 (0.58 after trimming 10
+  outliers, 0.42 from the quartile medians), so value grows with the square root
+  of TVL, anchored on the snapshot's own $50M floor. The old linear 0.30×
+  overvalued the giants about 6× and undervalued the smallest protocols about 3×.
+  Bigger is still worth more, and faster-growing is still worth more — the curve
+  only stops pretending the share is constant.
 - **Growth, asymmetric and bounded** — rising TVL lifts value at 0.8×; falling TVL
   cuts it at 1.2×. A shrinking protocol hurts more than a growing one helps. The
   multiplier itself is bounded to 0.5×–1.6×: the TVL already records the week's
@@ -32,6 +42,17 @@ implied = round( tvl_usd × 0.30
   USDD at rank 5 are unchanged — their weeks were ordinary.
 - **Age, logarithmic** — longer with no token means more pent-up value, rising fast
   then levelling off. Unknown age counts as 365 days.
+- **Category, fitted small** — each category pays a little more or less than the
+  size curve alone says, fitted from the snapshot's own live protocols: for every
+  category with at least 5 live rows, the median log market-cap against the size
+  curve, centred on the typical protocol, shrunk toward 1 by n/(n+10) and clamped
+  to 0.80–1.25×. Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19×;
+  every other category 1.00×. Categories with fewer live rows get no factor —
+  one live row is noise, not a signal (Prediction Market's single live row sits
+  576× off the curve). The fit is computed from the snapshot on every run, never
+  hand-set. Growth and age were checked the same way after the size curve and
+  barely move market cap (r = −0.15 and −0.05), so both stay small bounded
+  adjustments, never the driver.
 - **Copies at 2%** — wrapped, staked and bridged products of tokens that already
   trade use the same formula at a 2% weight, rescaled so the largest copy stays
   below the smallest launch. They rank at the bottom, because a copy is not a
@@ -46,10 +67,12 @@ set aside in a Live token view with their market caps — a fact, not a model.
 Every row carries seven steps, derived from the protocol's own record (category,
 chains, TVL, age): a fresh wallet funded with the chain's own gas token, the
 category's main action and a second qualifying action in the protocol's own app
-on its chain, weekly activity, a hold of 45–90 days with the whole plan's gas
-budgeted (setup + weekly + unwind), a rewards-page check naming the category's
-own reward, and the category's own exit order. Each step states its cost and
-time, including chain-specific gas.
+on its chain — naming the protocol's other chains when it runs on more than one
+(85 of the 198 launches do) — weekly activity with the number of weeks to repeat
+it, a hold of 45–90 days with the whole plan's gas budgeted (setup + weekly +
+unwind) and the all-in total stated (capital plus gas), a rewards-page check
+naming the category's own reward, and the category's own exit order. Each step
+states its cost and time, including chain-specific gas.
 
 ## Run it
 
@@ -68,7 +91,7 @@ runs write identical bytes.
 ## Files
 
 - `main.ts` — reads the snapshot, builds the board, writes the outputs.
-- `lib/model.ts` — the radar-3 model, the farm plans, the board checks.
+- `lib/model.ts` — the radar-4 model, the farm plans, the board checks.
 - `vendor/makefun-board.ts` — the kit's dossier library, unchanged.
 - `dashboard/` — `index.html`, `app.css`, `app.js` (sortable, filterable, detail
   view; the page recomputes every row's implied value from the snapshot figures

@@ -1,4 +1,4 @@
-/* Token Radar (radar-3). Palette: deep navy header, paper cards, emerald value bars. No framework, no network. */
+/* Token Radar (radar-4). Palette: deep navy header, paper cards, emerald value bars. No framework, no network. */
 :root{--ink:#101828;--ink-soft:#344054;--muted:#667085;--line:#d0d5dd;--bg:#eef1f4;--card:#fff;--navy:#10233f;--navy-soft:#1b355e;--emerald:#0e7a5f;--emerald-soft:#e6f4f0;--amber:#b45309;--amber-soft:#fdf3e3;--red:#b42318;--green:#067647;--radius:10px;--space:16px}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -92,8 +92,15 @@ dialog.detail::backdrop{background:rgba(16,35,63,.45)}
 .equation b{font-variant-numeric:tabular-nums}
 .equation .total{border-bottom:none}
 .equation .total b{color:var(--emerald);font-size:16px}
-.check{font-size:13px;color:var(--ink-soft);margin:10px 0 0}
-.check b{color:var(--green)}
+.recompute{font-size:13px;color:var(--ink-soft);margin:10px 0 0}
+.recompute b{color:var(--green)}
+.worked{font-size:13.5px;color:var(--ink-soft);margin:10px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.calib{margin-top:14px}
+.calib h3{margin:0 0 6px;font-size:15px}
+.calib p{margin:0 0 8px;font-size:13.5px}
+.calib table{font-size:13.5px}
+.calib th,.calib td{padding:7px 12px}
+.calib td.num,.calib th.num{text-align:right}
 .steps{margin:0;padding-left:22px;display:grid;gap:10px}
 .steps li::marker{font-weight:800;color:var(--emerald)}
 .steps b{display:block;font-weight:600}

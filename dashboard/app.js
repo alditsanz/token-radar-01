@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard (radar-4). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, filters, sort, and a per-protocol detail view with
 // the model's own inputs and the protocol's farm plan. No network: every byte it shows is
 // in data.js. The value model, in one function — the page recomputes a row from the snapshot
@@ -6,14 +6,20 @@
 // are visibly the same arithmetic:
 //
 //   implied = round( tvl_usd x 0.30
+//                  x sqrt(50000000 / tvl_usd)
 //                  x min(1.6, max(0.5, 1 + clamp(change_7d, -80, 200) / 100 x (growth >= 0 ? 0.8 : 1.2)))
-//                  x (0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)) )
+//                  x (0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095))
+//                  x category factor )
 //
-// The growth term is bounded because the TVL already records the week's move: one bad week
-// never erases more than half the value that remains, one good week never adds more than 60%
-// on top of a TVL that already includes the spike. A copy's value is the same formula at a
-// 2% weight, rescaled so the largest copy stays below the smallest launch. No protocol name
-// is special-cased anywhere in this file.
+// Value grows with the square root of TVL, not linearly: the snapshot's own live-token
+// protocols trade at a median 0.89x TVL at $5-10M of TVL, 0.37x at $10-32M, 0.21x at
+// $33-95M and 0.05x above $108M, so a linear share overvalues the giants about 6x. The
+// growth term is bounded because the TVL already records the week's move: one week of
+// momentum never erases more than half the value that remains or adds more than 60%.
+// The category factor is fitted from the same snapshot's live protocols (at most
+// 0.80x-1.25x, only where a category has 5 or more live rows). A copy's value is the
+// same formula at a 2% weight, rescaled so the largest copy stays below the smallest
+// launch. No protocol name is special-cased anywhere in this file.
 (function () {
   'use strict';
 
@@ -40,7 +46,9 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The model in one function: TVL, seven-day growth and age with no token, nothing else.
+  // The model in one function: TVL, seven-day growth, age with no token and the
+  // category factor — nothing else. Value grows with the square root of TVL: the
+  // snapshot's own live protocols trade at a shrinking share of TVL as they grow.
   // The growth term is bounded: the TVL already records the week's move, so one week of
   // momentum never erases more than half the value that remains or adds more than 60%.
   function impliedOf(row) {
@@ -49,18 +57,23 @@
     var growthMult = Math.min(MODEL.growth_mult_cap, Math.max(MODEL.growth_mult_floor, 1 + (growth / 100) * weight));
     var age = row.age_days === null || row.age_days === undefined ? MODEL.unknown_age_days : row.age_days;
     var maturity = MODEL.maturity_floor + (Math.log(1 + Math.min(Math.max(age, 0), MODEL.maturity_days)) / Math.log(1 + MODEL.maturity_days)) * MODEL.maturity_range;
-    var value = Math.max(1, Math.round(row.tvl_usd * MODEL.base_multiple * growthMult * maturity));
-    return { value: value, growthMult: growthMult, maturity: maturity, copy: row.tier === 'copy' };
+    var size = Math.pow(MODEL.size_ref_usd / Math.max(row.tvl_usd, 1), MODEL.size_exponent);
+    var cat = (MODEL.category_factors && MODEL.category_factors[row.category]) || 1;
+    var value = Math.max(1, Math.round(row.tvl_usd * MODEL.base_multiple * size * growthMult * maturity * cat));
+    return { value: value, growthMult: growthMult, maturity: maturity, size: size, cat: cat, copy: row.tier === 'copy' };
   }
-  // Why this row ranks where it does, in one line a reader can check: the TVL, the week's
-  // move with the multiplier it earned, and the age with the maturity it earned. A copy
-  // shows its 2% weight instead: its multipliers are the pre-rescale ones, so they are
-  // not the number the board carries for it.
+  // Why this row ranks where it does, in one line a reader can check: the TVL with the
+  // size factor it earned, the week's move with the multiplier it earned, the age with
+  // the maturity it earned, and the category factor when it is not 1. A copy shows its
+  // 2% weight instead: its multipliers are the pre-rescale ones, so they are not the
+  // number the board carries for it.
   function reasonFor(row) {
     var parts = [fmtUsd(row.tvl_usd) + ' TVL', fmtPct(row.change_7d) + ' in 7d', fmtAge(row.age_days) + ' with no token'];
-    if (row.tier === 'copy') { parts.push('wrapped, staked or bridged copy'); return parts.join(' · '); }
+    if (row.tier === 'copy') { parts.push('copy at 2% weight, rescaled below the smallest launch'); return parts.join(' · '); }
+    if (row.size_multiplier !== undefined) parts[0] += ' (×' + row.size_multiplier.toFixed(2) + ' size)';
     if (row.growth_multiplier !== undefined) parts[1] += ' (×' + row.growth_multiplier.toFixed(2) + ')';
     if (row.maturity_multiplier !== undefined) parts[2] += ' (×' + row.maturity_multiplier.toFixed(2) + ')';
+    if (row.category_multiplier !== undefined && row.category_multiplier !== 1) parts.push((row.category || 'Other') + ' ×' + row.category_multiplier.toFixed(2));
     return parts.join(' · ');
   }
 
@@ -188,9 +201,14 @@
     function tabBtn(tab, label) {
       return el('button', { type: 'button', 'aria-pressed': state.tab === tab ? 'true' : 'false', text: label, onclick: function () { state.tab = tab; render(); } });
     }
-    var shown = filteredRows().length;
+    var shownRows = filteredRows();
+    var shown = shownRows.length;
     var total = state.tab === 'live' ? DATA.live.length : baseRows().length;
     var tabLabel = state.tab === 'live' ? 'live-token protocols' : state.tab === 'copy' ? 'copies' : 'launches';
+    // The filtered set's own scale at a glance: the median value of what the filter
+    // leaves, so a reader sees whether the filter kept the giants or the tail.
+    var medians = shownRows.map(function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }).sort(function (a, b) { return a - b; });
+    var medianText = medians.length ? ' · median ' + fmtUsd(medians[Math.floor(medians.length / 2)]) : '';
     // The watchlist toggle: the 40 watchlist protocols alone, so a reader can check the
     // floor the board promises without the 302 other rows in the way.
     var wlBox = el('input', { type: 'checkbox', id: 'watchlist-only', 'aria-label': 'Watchlist only' });
@@ -204,7 +222,7 @@
       el('label', { class: 'check', for: 'watchlist-only' }, wlBox, ' Watchlist only (' + DATA.watchlist_size + ')'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
-      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' })
+      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' + medianText })
     );
   }
 
@@ -316,19 +334,49 @@
 
   function modelPanel() {
     var m = MODEL;
+    // The evidence for the square-root size curve, from the snapshot's own live
+    // protocols: median market-cap/TVL by TVL quartile, 128 live-token protocols.
+    var calib = el('div', { class: 'calib' },
+      el('h3', { text: 'Why value grows with the square root of TVL' }),
+      el('p', { text: 'The 128 live-token protocols in this snapshot trade at a median 0.89× TVL at $5–10M of TVL, 0.37× at $10–32M, 0.21× at $33–95M and 0.05× above $108M — a 17× fall. A log-log fit of market cap on TVL gives a slope of 0.52 (0.58 after trimming 10 outliers, 0.42 from the quartile medians), so the model uses 0.50: value grows with the square root of TVL, anchored on the snapshot\u2019s own $50M floor.' }),
+      el('table', null,
+        el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'TVL band' }), el('th', { scope: 'col', class: 'num', text: 'Live protocols' }), el('th', { scope: 'col', class: 'num', text: 'Median market cap / TVL' }))),
+        el('tbody', null,
+          [['$5–10M', '32', '0.89'], ['$10–32M', '32', '0.37'], ['$33–95M', '32', '0.21'], ['$108M and up', '32', '0.05']].map(function (r) {
+            return el('tr', null, el('td', { text: r[0] }), el('td', { class: 'num', text: r[1] }), el('td', { class: 'num', text: r[2] }));
+          })
+        )
+      )
+    );
+    // The category factors the snapshot fitted: only categories with 5 or more live
+    // protocols get one, shrunk toward 1 and clamped to 0.80–1.25.
+    var factors = (m.category_factors && Object.keys(m.category_factors).sort()) || [];
+    var factorTable = factors.length ? el('div', { class: 'calib' },
+      el('h3', { text: 'Category factors, fitted from the same snapshot' }),
+      el('p', { text: 'Each factor is the category\u2019s median log market-cap against the size curve, centred on the typical protocol, shrunk toward 1 by n/(n+10) and clamped to 0.80–1.25. Categories with fewer than 5 live protocols get no factor — one live row is noise, not a signal. Every other category is 1.00.' }),
+      el('table', null,
+        el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', class: 'num', text: 'Factor' }))),
+        el('tbody', null, factors.map(function (c) {
+          return el('tr', null, el('td', { text: c }), el('td', { class: 'num', text: '×' + m.category_factors[c].toFixed(2) }));
+        }))
+      )
+    ) : null;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { text: 'Every row is scored by one function of the snapshot figures — TVL, seven-day growth and age with no token. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { text: 'Every row is scored by one function of the snapshot figures — TVL, seven-day growth, age with no token and category. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd × ' + m.base_multiple + ' × min(' + m.growth_mult_cap + ', max(' + m.growth_mult_floor + ', 1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 × ' + m.growth_weight_up + ' up / ' + m.growth_weight_down + ' down)) × (' + m.maturity_floor + ' + ' + m.maturity_range + ' × ln(1 + min(age_days, ' + m.maturity_days + ')) / ln(1 + ' + m.maturity_days + ')) )'
+        'implied = round( tvl_usd × ' + m.base_multiple + ' × (' + m.size_ref_usd.toLocaleString('en-US') + ' / tvl_usd)^' + m.size_exponent + ' × min(' + m.growth_mult_cap + ', max(' + m.growth_mult_floor + ', 1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 × ' + m.growth_weight_up + ' up / ' + m.growth_weight_down + ' down)) × (' + m.maturity_floor + ' + ' + m.maturity_range + ' × ln(1 + min(age_days, ' + m.maturity_days + ')) / ln(1 + ' + m.maturity_days + ')) × category factor )'
       ),
       el('div', { class: 'keys' },
-        el('div', { class: 'key' }, el('b', { text: 'TVL × ' + m.base_multiple }), el('span', { text: 'A launch is worth a share of the value already locked in the protocol.' })),
+        el('div', { class: 'key' }, el('b', { text: 'TVL × ' + m.base_multiple + ', square-root size' }), el('span', { text: 'A launch is worth a share of the value already locked in — but the share shrinks as the protocol grows, because the market pays a shrinking share of TVL (see the table below).' })),
         el('div', { class: 'key' }, el('b', { text: 'Growth, bounded' }), el('span', { text: 'Rising TVL lifts value at 0.8×; falling TVL cuts it at 1.2×. Clamped to −80%…+200%, and the multiplier itself never falls below 0.5× or rises above 1.6×: the TVL already records the week\u2019s move, so one week never erases or triples a value.' })),
         el('div', { class: 'key' }, el('b', { text: 'Age, logarithmic' }), el('span', { text: 'Longer with no token means more pent-up value, rising fast then levelling off. Unknown age counts as 365 days.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Category, fitted small' }), el('span', { text: 'A category pays a little more or less than the size curve alone says — Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19× — fitted from the live protocols of that category, shrunk toward 1 and never beyond 0.80–1.25×.' })),
         el('div', { class: 'key' }, el('b', { text: 'Copies at 2%' }), el('span', { text: 'Wrapped, staked and bridged copies use the same formula at a 2% weight, rescaled below the smallest launch.' }))
       ),
-      el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed — the best record of how long it has run with no token. The board separates protocols whose token already trades from those still to come, and says a protocol records no token, never that it has none.' })
+      calib,
+      factorTable,
+      el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed — the best record of how long it has run with no token. The board separates protocols whose token already trades from those still to come, and says a protocol records no token, never that it has none. Growth and age were checked against the live set after the size curve and barely move market cap (r = −0.15 and −0.05), so both stay small bounded adjustments, never the driver.' })
     );
   }
 
@@ -345,12 +393,16 @@
     var matches = check.value === row.implied_value_usd || (row.tier === 'copy');
     var steps = row.farm_steps || [];
     // Where this row sits against its own tier: how far ahead of the next row it is, so
-    // the reader sees whether the rank is a clear lead or a near-tie.
+    // the reader sees whether the rank is a clear lead or a near-tie — and where its TVL
+    // sits on the board, so a reader sees whether the rank comes from size or from
+    // growth, age and category.
     var peers = DATA.rows.filter(function (r) { return r.tier === row.tier; });
     var next = peers[peers.indexOf(row) + 1];
     var context = next
       ? fmtUsd(row.implied_value_usd - next.implied_value_usd) + ' ahead of rank ' + next.rank + ' (' + next.name + ').'
       : 'The smallest ' + (row.tier === 'copy' ? 'copy' : 'launch') + ' on the board.';
+    var byTvl = DATA.rows.slice().sort(function (a, b) { return b.tvl_usd - a.tvl_usd; });
+    context += ' Its TVL ranks #' + (byTvl.indexOf(row) + 1) + ' of ' + DATA.board_size + ' on the board.';
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'kicker', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (row.tier === 'copy' ? ' · wrapped / staked copy' : ' · pre-token launch') }),
@@ -368,9 +420,12 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+        el('div', null, el('span', { text: 'Size factor' }), el('b', { class: 'num', text: '×' + String(row.size_multiplier) })),
+        el('div', null, el('span', { text: 'Category factor' }), el('b', { class: 'num', text: '×' + String(row.category_multiplier) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'check' },
+      el('p', { class: 'worked', text: 'Worked: ' + fmtUsd(row.tvl_usd) + ' × ' + MODEL.base_multiple + ' × ' + row.size_multiplier + ' size × ' + row.growth_multiplier + ' growth × ' + row.maturity_multiplier + ' maturity × ' + row.category_multiplier + ' category = ' + fmtUsd(check.value) + (row.tier === 'copy' ? ' before the 2% copy rescale.' : '.') }),
+      el('p', { class: 'recompute' },
         'Model ' + DATA.model_version + ': this page recomputes the row as ',
         el('b', { text: fmtUsd(check.value) }),
         matches ? ' — the same number board.json carries.' : ' — the board carries the copy-rescaled value instead (see below).',
