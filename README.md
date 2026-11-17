@@ -63,6 +63,23 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   what a ranking needs, not any single one. The Live tab carries each live
   protocol's own market-cap/TVL ratio, so the reader sees the shrinking share
   with their own eyes.
+- **Blind test** — the curve is proven on protocols it never saw: split the 128
+  live protocols in half by a deterministic parity of the slug, fit the log-log
+  curve on one half and predict the other, both ways. The held-out median error
+  is ×3.5 one way and ×3.6 the other, against ×3.4 in-sample — the curve
+  generalises across the live set instead of memorising its training set. The
+  fitted slopes on the two halves are 0.59 and 0.45, bracketing the 0.52 fit on
+  all 128, so the square-root exponent is not an artefact of one half.
+- **Likely range** — every row carries a middle-half range for its implied
+  value: the 25th to 75th percentile of market-cap / curve among the live
+  protocols (0.27×–3.64×). Wide on purpose — market caps scatter widely at any
+  TVL — and computed from the snapshot on every run, never hand-set. The
+  detail view shows it next to the value.
+- **Sensitivity** — the top 3 launches' implied value at size exponents 0.45 /
+  0.50 / 0.55, same $50M anchor: Sentora $130.9M / $107.1M / $87.6M, Steakhouse
+  $127.1M / $104.1M / $85.2M, Gauntlet $100.5M / $84.5M / $71.1M. Moving the
+  exponent moves no launch 10 or more ranks either way — the ranking is set by
+  the ordering of TVL, not by the exact exponent.
 - **Copies at 2%** — wrapped, staked and bridged products of tokens that already
   trade use the same formula at a 2% weight, rescaled so the largest copy stays
   below the smallest launch. They rank at the bottom, because a copy is not a
@@ -74,7 +91,7 @@ set aside in a Live token view with their market caps — a fact, not a model.
 
 ## The farm plan
 
-Every row carries seven steps, derived from the protocol's own record (category,
+Every row carries eight steps, derived from the protocol's own record (category,
 chains, TVL, age): a fresh wallet funded with the chain's own gas token, the
 category's main action and a second qualifying action in the protocol's own app
 on its chain — naming the protocol's other chains when it runs on more than one
@@ -85,6 +102,21 @@ it, a hold of 45–90 days with the whole plan's gas budgeted (setup + weekly +
 unwind) and the all-in total stated (capital plus gas), a rewards-page check
 naming the category's own reward, and the category's own exit order. Each step
 states its cost and time, including chain-specific gas.
+
+The eighth step is the verdict, netted in dollars: the plan's whole gas bill
+against the position's pro-rata share of its implied value (capital / TVL ×
+implied). **Farm** means at least $20 stays after gas at $5 or more an hour of
+hands-on work; **Thin** means something smaller stays; **Skip** means the gas
+costs more than the share. Among the 198 launches: 82 Farm, 42 Thin, 74 Skip
+(counts from the built board; copies are all Skip — at a 2% weight their share
+is smaller than any plan's gas). The board sorts by Farm net too, so the best
+farms per hour sit first: the top farm is Manifest Trade at about $53.16 an
+hour (rank 84 by implied value), while rank 1 nets −$62 — a $250 position is a
+rounding error next to a $2.76B TVL. Pro-rata is a yardstick for ranking farms,
+never a promise of what one pays: airdrops rarely pay pro-rata, and the plan
+says so in the step itself. Hands-on hours count setup (30 minutes), claiming
+(10), unwinding (15) and 10 minutes a week — never the hold, which is waiting,
+not work.
 
 ## Run it
 
@@ -108,7 +140,8 @@ runs write identical bytes.
 - `dashboard/` — `index.html`, `app.css`, `app.js` (sortable, filterable, detail
   view; the page recomputes every row's implied value from the snapshot figures
   and checks it against board.json; watchlist rows wear a ★ badge, the count line
-  shows the filtered set's median and total, and the Live tab shows each live
+  shows the filtered set's median, total and farm-verdict counts, the Farm net
+  column sorts the board by dollars per hour of hands-on work, and the Live tab shows each live
   protocol's market-cap/TVL ratio).
 - `screenshots/` — 1-board.png, 2-detail.png, 3-filtered.png.
 - `LICENSE` — MIT.

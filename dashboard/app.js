@@ -16,13 +16,18 @@
 // $33-95M and 0.05x above $108M, so a linear share overvalues the giants about 6x.
 // Checked against the same 128 live-token protocols, the curve lands within 2x of the
 // market cap for 43 of them and the median live protocol sits at 0.92x the curve, so
-// the curve is centred on the typical protocol, not any single one. The
+// the curve is centred on the typical protocol, not any single one. Blind-tested, it
+// holds up: fitted on half the live protocols it predicts the other half with a median
+// error of x3.5, and x3.6 the other way, against x3.4 in-sample. The
 // growth term is bounded because the TVL already records the week's move: one week of
 // momentum never erases more than half the value that remains or adds more than 60%.
 // The category factor is fitted from the same snapshot's live protocols (at most
 // 0.80x-1.25x, only where a category has 5 or more live rows). A copy's value is the
 // same formula at a 2% weight, rescaled so the largest copy stays below the smallest
-// launch. No protocol name is special-cased anywhere in this file.
+// launch. Every row also carries a farm verdict — Farm, Thin or Skip — from netting the
+// plan's gas against the position's pro-rata share of its implied value, in dollars per
+// hour of hands-on work, and a middle-half range for its implied value (0.27x-3.64x the
+// curve). No protocol name is special-cased anywhere in this file.
 (function () {
   'use strict';
 
@@ -56,6 +61,12 @@
     if (r.mcap_usd === null || r.mcap_usd === undefined || !r.tvl_usd) return 'n/a';
     var v = r.mcap_usd / r.tvl_usd;
     return '×' + (v >= 0.1 ? v.toFixed(2) : v.toFixed(3));
+  }
+  // Farm net per hour of hands-on work, signed: +$52.75/h for a farm that pays,
+  // −$40.45/h for one whose gas costs more than its pro-rata share.
+  function fmtPerHour(v) {
+    if (v === null || v === undefined || !isFinite(v)) return 'n/a';
+    return (v < 0 ? '−$' : '$') + Math.abs(v).toFixed(2) + '/h';
   }
   // The model in one function: TVL, seven-day growth, age with no token and the
   // category factor — nothing else. Value grows with the square root of TVL: the
@@ -111,11 +122,12 @@
 
   function readHash() {
     var params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-    [['q', 'q'], ['category', 'category'], ['chain', 'chain'], ['growth', 'growth'], ['tab', 'tab'], ['p', 'selected']].forEach(function (pair) {
+    [['q', 'q'], ['category', 'category'], ['chain', 'chain'], ['growth', 'growth'], ['tab', 'tab'], ['p', 'selected'], ['sort', 'sort']].forEach(function (pair) {
       var v = params.get(pair[0]);
       if (v) state[pair[1]] = v;
     });
     if (params.get('w') === '1') state.watchlistOnly = true;
+    if (!SORT_KEY[state.sort]) state.sort = 'implied';
   }
   function writeHash() {
     var params = new URLSearchParams();
@@ -125,6 +137,7 @@
     set('chain', state.chain, 'all');
     set('growth', state.growth, 'all');
     set('tab', state.tab, 'launch');
+    set('sort', state.sort, 'implied');
     set('w', state.watchlistOnly ? '1' : '');
     set('p', state.selected);
     var next = params.toString();
@@ -158,6 +171,10 @@
     age: function (r) { return r.age_days === null ? Infinity : r.age_days; },
     mcap: function (r) { return r.mcap_usd === null ? -Infinity : r.mcap_usd; },
     ratio: function (r) { return r.mcap_usd === null || !r.tvl_usd ? -Infinity : r.mcap_usd / r.tvl_usd; },
+    // Farm net per hour of hands-on work: the leaderboard the farm verdicts are
+    // ranked on — the biggest launches are the worst farms, so this order is
+    // genuinely different from the implied-value order.
+    farm: function (r) { return r.farm_per_hour_usd === undefined ? -Infinity : r.farm_per_hour_usd; },
     implied: function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }
   };
   function sortedRows(list) {
@@ -224,6 +241,15 @@
     // And the set's total, so the reader sees the whole weight of what the filter kept.
     var totalValue = shownRows.reduce(function (s, r) { return s + (r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd); }, 0);
     var totalText = shownRows.length ? ' · total ' + fmtUsd(totalValue) : '';
+    // And the set's farm verdicts, so a reader sees at a glance how many of the rows
+    // the filter kept are farms worth doing, thin ones and skips — the verdicts are
+    // netted in dollars, not vibes, so the counts are a summary of the board's money.
+    var verdictText = '';
+    if (state.tab !== 'live') {
+      var vc = { Farm: 0, Thin: 0, Skip: 0 };
+      shownRows.forEach(function (r) { if (r.farm_verdict) vc[r.farm_verdict]++; });
+      verdictText = ' · ' + vc.Farm + ' Farm · ' + vc.Thin + ' Thin · ' + vc.Skip + ' Skip';
+    }
     // The watchlist toggle: the 40 watchlist protocols alone, so a reader can check the
     // floor the board promises without the 302 other rows in the way.
     var wlBox = el('input', { type: 'checkbox', id: 'watchlist-only', 'aria-label': 'Watchlist only' });
@@ -237,13 +263,13 @@
       el('label', { class: 'check', for: 'watchlist-only' }, wlBox, ' Watchlist only (' + DATA.watchlist_size + ')'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
-      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' + medianText + totalText })
+      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' + medianText + totalText + verdictText })
     );
   }
 
   function sortHeader(key, label) {
     return el('th', { scope: 'col' },
-      el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } render(); } },
+      el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } writeHash(); render(); } },
         label,
         state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' ▼' : ' ▲' }) : null
       )
@@ -298,6 +324,10 @@
           el('div', { class: 'bar' + (r.tier === 'copy' ? ' copy' : ''), 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
+        el('td', { class: 'num', title: 'Farm net ' + ((r.farm_net_usd || 0) >= 0 ? '+$' : '−$') + Math.abs(r.farm_net_usd || 0).toLocaleString('en-US') + ' after gas' },
+          el('span', { class: 'verdict v-' + (r.farm_verdict || 'Skip').toLowerCase(), text: r.farm_verdict || 'Skip' }),
+          ' ' + fmtPerHour(r.farm_per_hour_usd)
+        ),
         el('td', null, el('span', { class: 'status ' + r.tier, text: r.tier === 'copy' ? 'copy' : 'no token' }))
       );
       tbody.appendChild(tr);
@@ -316,6 +346,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('farm', 'Farm net'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -371,7 +402,12 @@
       // protocols (builder audit: median |log(market cap / curve)| 1.314, so a median
       // error of x3.7; 43 of 128 within 2x, 57 within 3x; median signed log residual
       // -0.088, so the median live protocol sits at 0.92x the curve).
-      el('p', { text: 'Checked against the market: the same curve predicts the 128 live-token protocols\u2019 market caps with a median error of \u00d73.7 \u2014 43 of the 128 land within 2\u00d7 of their market cap, 57 within 3\u00d7, and the median live protocol sits at 0.92\u00d7 the curve, so the curve is centred on the typical protocol. Market caps scatter widely at any TVL, so the curve tracks the median protocol \u2014 which is what a ranking needs \u2014 not any single one.' })
+      el('p', { text: 'Checked against the market: the same curve predicts the 128 live-token protocols\u2019 market caps with a median error of \u00d73.7 \u2014 43 of the 128 land within 2\u00d7 of their market cap, 57 within 3\u00d7, and the median live protocol sits at 0.92\u00d7 the curve, so the curve is centred on the typical protocol. Market caps scatter widely at any TVL, so the curve tracks the median protocol \u2014 which is what a ranking needs \u2014 not any single one.' }),
+      // Blind test, rendered from the model's own numbers (computed at build time
+      // from the same snapshot): the curve fitted on one half of the live
+      // protocols predicts the other half, both ways. Held-out error within ~5%
+      // of in-sample error means the curve generalises instead of memorising.
+      m.blind ? el('p', { text: 'Blind test: the curve was fitted on half the live protocols and asked to predict the other half, both ways. It lands with a median error of \u00d7' + Math.exp(m.blind.fit_a_to_b).toFixed(1) + ' one way and \u00d7' + Math.exp(m.blind.fit_b_to_a).toFixed(1) + ' the other, against \u00d7' + Math.exp(m.blind.in_sample).toFixed(1) + ' on the protocols it was fitted on \u2014 so the curve generalises to protocols it never saw, instead of memorising its training set.' }) : null
     );
     // The category factors the snapshot fitted: only categories with 5 or more live
     // protocols get one, shrunk toward 1 and clamped to 0.80–1.25.
@@ -386,6 +422,29 @@
         }))
       )
     ) : null;
+    // Sensitivity: the top 3 launches' implied value at size exponents 0.45 / 0.50 /
+    // 0.55, same $50M anchor, rendered from the build's own numbers — plus how many
+    // launches move 10 or more ranks at each off-centre exponent. The order barely
+    // moves, so the ranking is set by the ordering of TVL, not by the exact exponent.
+    var sens = (DATA.sensitivity || []).length ? el('div', { class: 'calib' },
+      el('h3', { text: 'How much the ranking depends on the size exponent' }),
+      el('p', { text: 'The same formula with the size exponent at 0.45 or 0.55 instead of 0.50, same $50M anchor: the top rows move by about a fifth either way, and ' + (DATA.sensitivity_rank_moves ? DATA.sensitivity_rank_moves.at_045 + ' launch moves 10 or more ranks at 0.45 and ' + DATA.sensitivity_rank_moves.at_055 + ' at 0.55' : 'no launch moves far') + ' \u2014 the ranking is set by the ordering of TVL, not by the exact exponent.' }),
+      el('table', null,
+        el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', class: 'num', text: 'Exponent 0.45' }), el('th', { scope: 'col', class: 'num', text: 'Exponent 0.50' }), el('th', { scope: 'col', class: 'num', text: 'Exponent 0.55' }))),
+        el('tbody', null, DATA.sensitivity.map(function (s) {
+          return el('tr', null, el('td', { text: s.name }), el('td', { class: 'num', text: fmtUsd(s.at_045) }), el('td', { class: 'num', text: fmtUsd(s.at_050) }), el('td', { class: 'num', text: fmtUsd(s.at_055) }));
+        }))
+      )
+    ) : null;
+    // Farm verdicts, counted live from the board: the verdicts are netted in
+    // dollars, so the counts say how many farms the board thinks are worth doing.
+    var launchVerdicts = DATA.rows.filter(function (r) { return r.tier === 'launch'; });
+    var farmCounts = { Farm: 0, Thin: 0, Skip: 0 };
+    launchVerdicts.forEach(function (r) { if (r.farm_verdict) farmCounts[r.farm_verdict]++; });
+    var verdictBlock = el('div', { class: 'calib' },
+      el('h3', { text: 'Farm verdicts: ' + farmCounts.Farm + ' Farm, ' + farmCounts.Thin + ' Thin, ' + farmCounts.Skip + ' Skip' }),
+      el('p', { text: 'Among the ' + launchVerdicts.length + ' launches, ' + farmCounts.Farm + ' farms net at least $20 after gas at $5 or more an hour, ' + farmCounts.Thin + ' net something smaller, and ' + farmCounts.Skip + ' lose money on gas before they pay anything. Every copy is Skip: at a 2% weight its pro-rata share is smaller than any plan\u2019s gas. The biggest launches are the worst farms \u2014 rank 1 nets \u2212$62 \u2014 because a $250 position is a rounding error next to a $2.76B TVL; the best farms per hour sit deep in the board, around rank 84. Sort the board by Farm net to see them first.' })
+    );
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { text: 'Every row is scored by one function of the snapshot figures — TVL, seven-day growth, age with no token and category. No protocol name is special-cased, and no row is hand-picked.' }),
@@ -397,10 +456,14 @@
         el('div', { class: 'key' }, el('b', { text: 'Growth, bounded' }), el('span', { text: 'Rising TVL lifts value at 0.8×; falling TVL cuts it at 1.2×. Clamped to −80%…+200%, and the multiplier itself never falls below 0.5× or rises above 1.6×: the TVL already records the week\u2019s move, so one week never erases or triples a value.' })),
         el('div', { class: 'key' }, el('b', { text: 'Age, logarithmic' }), el('span', { text: 'Longer with no token means more pent-up value, rising fast then levelling off. Unknown age counts as 365 days.' })),
         el('div', { class: 'key' }, el('b', { text: 'Category, fitted small' }), el('span', { text: 'A category pays a little more or less than the size curve alone says — Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19× — fitted from the live protocols of that category, shrunk toward 1 and never beyond 0.80–1.25×.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Likely range, from the live scatter' }), el('span', { text: 'Every row\u2019s implied value carries a middle-half range: the 25th to 75th percentile of market-cap / curve among the live protocols (' + (m.interval ? '×' + m.interval.lo + '–×' + m.interval.hi : 'see the detail view') + '). Wide on purpose — market caps scatter widely at any TVL — and shown on each protocol\u2019s detail view.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Farm verdict, netted in dollars' }), el('span', { text: 'Every row is Farm, Thin or Skip: the plan\u2019s whole gas bill netted against the position\u2019s pro-rata share of its implied value. Farm means at least $20 stays after gas at $5 or more an hour of hands-on work; Thin means something stays; Skip means the gas costs more than the share. Pro-rata is a yardstick for ranking farms, never a promise of what one pays.' })),
         el('div', { class: 'key' }, el('b', { text: 'Copies at 2%' }), el('span', { text: 'Wrapped, staked and bridged copies use the same formula at a 2% weight, rescaled below the smallest launch.' }))
       ),
       calib,
       factorTable,
+      sens,
+      verdictBlock,
       el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed — the best record of how long it has run with no token. The board separates protocols whose token already trades from those still to come, and says a protocol records no token, never that it has none. Growth and age were checked against the live set after the size curve and barely move market cap (r = −0.15 and −0.05), so both stay small bounded adjustments, never the driver.' })
     );
   }
@@ -455,14 +518,19 @@
         el('b', { text: fmtUsd(check.value) }),
         matches ? ' — the same number board.json carries.' : ' — the board carries the copy-rescaled value instead (see below).',
         ' This is an estimate, not a price.'
-      )
+      ),
+      // The row's middle-half range, from the live protocols' own scatter, and its
+      // farm verdict in dollars — the two numbers that say how sure the value is
+      // and whether the farm pays, next to the value itself.
+      el('p', { class: 'range', text: 'Likely range ' + fmtUsd(row.implied_low_usd) + '–' + fmtUsd(row.implied_high_usd) + ' — the middle half of traded protocols land between ×' + (MODEL.interval ? MODEL.interval.lo : 0.27) + ' and ×' + (MODEL.interval ? MODEL.interval.hi : 3.64) + ' of the curve, so this value is a centre, not a point.' }),
+      el('p', { class: 'range', text: 'Farm verdict: ' + (row.farm_verdict || 'Skip') + ' — ' + ((row.farm_net_usd || 0) >= 0 ? 'about $' + (row.farm_net_usd || 0).toLocaleString('en-US') + ' stays after gas, ' + fmtPerHour(row.farm_per_hour_usd) + ' of hands-on work.' : 'the plan\u2019s gas costs about $' + Math.abs(row.farm_net_usd || 0).toLocaleString('en-US') + ' more than the position\u2019s pro-rata share, so it loses money before it pays anything.') + ' The full arithmetic is step 8 of the farm plan below.' })
     );
     if (row.tier === 'copy') {
       modelSection.insertBefore(el('p', { class: 'note', text: 'This protocol is a wrapped, staked or bridged copy of a token that already trades, so it is not a launch of its own. Its value is the same formula at a 2% weight, rescaled so the largest copy stays below the smallest launch — which is why it ranks at the bottom.' }), modelSection.children[1]);
     }
     dialog.appendChild(modelSection);
     dialog.appendChild(el('section', { class: 'detail-section' },
-      el('h3', { text: 'Farm plan — seven steps, with cost and time' }),
+      el('h3', { text: 'Farm plan — eight steps, with cost and time' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;

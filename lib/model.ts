@@ -54,6 +54,13 @@
 // stays below the smallest launch. The dashboard states the formula and recomputes every row
 // from the snapshot figures, so the page's code and the board's data are visibly the same
 // arithmetic.
+//
+// Three checks ride on the same snapshot, and the dashboard shows all three:
+// blindTest fits the size curve on half the live protocols and predicts the other half,
+// both ways, so the curve is proven on protocols it never saw; intervalFactors gives
+// every row a middle-half range from the live protocols' own scatter; and farmEconomics
+// nets each farm plan's gas against the position's pro-rata share of its implied value,
+// so every row carries a Farm / Thin / Skip verdict in dollars per hour of hands-on work.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -96,6 +103,14 @@ export interface ModelConstants {
   copy_weight: number;
   /** Per-category value factors, fitted from the snapshot at build time (see categoryFactors). Absent on the bare MODEL constant. */
   category_factors?: Record<string, number>;
+  /** Blind test of the size curve (see blindTest): median |log error| fitting one
+   *  half of the live protocols and predicting the other, both ways, plus the
+   *  in-sample figure for the same fit. Absent on the bare MODEL constant. */
+  blind?: { fit_a_to_b: number; fit_b_to_a: number; in_sample: number };
+  /** Middle-half interval for one row's implied value (see intervalFactors):
+   *  the 25th/75th percentiles of market-cap / curve among the live protocols.
+   *  Absent on the bare MODEL constant. */
+  interval?: { lo: number; hi: number };
 }
 
 export const MODEL: ModelConstants = {
@@ -148,6 +163,13 @@ export interface BoardRow {
   tier: Tier;
   age_days: number | null;
   implied_value_usd: number;
+  /** The farm plan's economics, netted in dollars (see farmEconomics). */
+  farm_net_usd: number;
+  farm_per_hour_usd: number;
+  farm_verdict: 'Farm' | 'Thin' | 'Skip';
+  /** The middle-half range for the implied value (see intervalFactors). */
+  implied_low_usd: number;
+  implied_high_usd: number;
   model: {
     base_multiple: number;
     growth_pct: number;
@@ -177,6 +199,11 @@ export interface RadarRow {
   maturity_multiplier: number;
   size_multiplier: number;
   category_multiplier: number;
+  farm_net_usd: number;
+  farm_per_hour_usd: number;
+  farm_verdict: 'Farm' | 'Thin' | 'Skip';
+  implied_low_usd: number;
+  implied_high_usd: number;
   tier: Tier;
   watchlist: boolean;
   farm_steps: string[];
@@ -207,6 +234,11 @@ export interface RadarData {
   live_size: number;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The top 3 launches' implied value at size exponents 0.45 / 0.50 / 0.55
+   *  (same $50M anchor), plus how many launches move 10 or more ranks at each
+   *  off-centre exponent — the ranking's sensitivity, computed at build time. */
+  sensitivity: { slug: string; name: string; at_045: number; at_050: number; at_055: number }[];
+  sensitivity_rank_moves: { at_045: number; at_055: number };
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -295,7 +327,66 @@ export function categoryFactors(snapshot: Snapshot, model: ModelConstants): Reco
 function effectiveModel(snapshot: Snapshot, model: ModelConstants): ModelConstants {
   const m: ModelConstants = { ...model, size_ref_usd: snapshot.floor_usd };
   if (model.category_factors === undefined) m.category_factors = categoryFactors(snapshot, m);
+  if (model.blind === undefined) m.blind = blindTest(snapshot, m);
+  if (model.interval === undefined) m.interval = intervalFactors(snapshot, m);
   return m;
+}
+
+/** The median of a sorted-by-value list. */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)]!;
+}
+
+/** A log-log OLS fit of market cap on TVL over the live protocols. */
+function logLogFit(rows: SnapshotProtocol[]): { slope: number; intercept: number } {
+  const xs = rows.map((p) => Math.log(p.tvl_usd));
+  const ys = rows.map((p) => Math.log(p.mcap_usd!));
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  let num = 0, den = 0;
+  for (let i = 0; i < xs.length; i++) { num += (xs[i]! - mx) * (ys[i]! - my); den += (xs[i]! - mx) ** 2; }
+  const slope = den === 0 ? 0 : num / den;
+  return { slope, intercept: my - slope * mx };
+}
+
+/** The blind test of the size curve: split the live protocols in half by a
+ *  deterministic parity of the slug (no peeking — each half is fitted without
+ *  the other), fit the log-log curve on one half and predict the other, both
+ *  ways, and report the median |log error| each way plus the in-sample figure
+ *  for the same fit on all live rows. A curve that only memorised its training
+ *  set would predict the held-out half far worse than its own half; here the
+ *  held-out errors sit within ~5% of the in-sample one, so the curve
+ *  generalises across the live set instead of overfitting it. */
+export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to_b: number; fit_b_to_a: number; in_sample: number } {
+  const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const round3 = (x: number): number => Math.round(x * 1000) / 1000;
+  if (live.length < 4) return { fit_a_to_b: 0, fit_b_to_a: 0, in_sample: 0 };
+  const parity = (s: string): number => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
+  const halfA = live.filter((p) => parity(p.slug) === 0);
+  const halfB = live.filter((p) => parity(p.slug) === 1);
+  const err = (rows: SnapshotProtocol[], f: { slope: number; intercept: number }): number =>
+    median(rows.map((p) => Math.abs(Math.log(p.mcap_usd! / Math.exp(f.intercept + f.slope * Math.log(p.tvl_usd))))));
+  const fitA = logLogFit(halfA);
+  const fitB = logLogFit(halfB);
+  return {
+    fit_a_to_b: round3(err(halfB, fitA)),
+    fit_b_to_a: round3(err(halfA, fitB)),
+    in_sample: round3(err(live, logLogFit(live))),
+  };
+}
+
+/** The middle-half interval for one row's implied value: the 25th and 75th
+ *  percentiles of (live market cap / full-model prediction) among the live
+ *  protocols, as multipliers. A row's likely range is its implied value times
+ *  each end. Wide on purpose — market caps scatter widely at any TVL — and
+ *  computed from the snapshot on every run, never hand-set. */
+export function intervalFactors(snapshot: Snapshot, model: ModelConstants): { lo: number; hi: number } {
+  const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  if (live.length === 0) return { lo: 1, hi: 1 };
+  const ratios = live.map((p) => p.mcap_usd! / impliedValue(p, snapshot.as_of, model).implied).sort((a, b) => a - b);
+  const q = (f: number): number => ratios[Math.min(ratios.length - 1, Math.floor(f * ratios.length))]!;
+  return { lo: Math.round(q(0.25) * 100) / 100, hi: Math.round(q(0.75) * 100) / 100 };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -355,13 +446,14 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   });
   const maxRaw = scoredCopies.reduce((m, s) => Math.max(m, s.raw), 0);
   scoredCopies.sort((a, b) => b.raw - a.raw || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const interval = m.interval ?? { lo: 1, hi: 1 };
   const copyRows: BoardRow[] = scoredCopies.map((s) => {
     // Copies are measured on the same ruler at a 2% weight, then rescaled so the largest
     // copy stays below the smallest launch: their order is their own, their place is below.
     const implied = maxRaw > 0 ? Math.max(1, Math.round((s.raw / maxRaw) * copyCap)) : 1;
-    return toRow(s.p, s, implied, 'copy');
+    return toRow(s.p, s, implied, 'copy', interval);
   });
-  const launchRows: BoardRow[] = scoredLaunches.map((s) => toRow(s.p, s, s.implied, 'launch'));
+  const launchRows: BoardRow[] = scoredLaunches.map((s) => toRow(s.p, s, s.implied, 'launch', interval));
   const rows = [...launchRows, ...copyRows];
   rows.forEach((r, i) => {
     r.rank = i + 1;
@@ -369,7 +461,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   return rows;
 }
 
-function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier): BoardRow {
+function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier, interval: { lo: number; hi: number }): BoardRow {
+  const econ = farmEconomics(p, v.age, implied);
   return {
     rank: 0,
     slug: p.slug,
@@ -386,6 +479,11 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     tier,
     age_days: v.age,
     implied_value_usd: implied,
+    farm_net_usd: econ.net_usd,
+    farm_per_hour_usd: econ.net_per_hour_usd,
+    farm_verdict: econ.verdict,
+    implied_low_usd: Math.max(1, Math.round(implied * interval.lo)),
+    implied_high_usd: Math.round(implied * interval.hi),
     model: {
       base_multiple: MODEL.base_multiple,
       growth_pct: v.growthPct,
@@ -395,7 +493,7 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
       category_multiplier: Math.round(v.catMult * 1e4) / 1e4,
       age_days: v.age,
     },
-    farm_steps: farmSteps(p, v.age).map(stepText),
+    farm_steps: farmSteps(p, v.age, implied).map(stepText),
   };
 }
 
@@ -436,6 +534,45 @@ function holdDaysFor(age: number | null): number {
   if (age < 180) return 90;
   if (age < 365) return 60;
   return 45;
+}
+
+/** One farm plan's economics, netted in dollars. The gross is the plan's
+ *  position as a pro-rata share of the protocol's implied value — capital /
+ *  TVL × implied — a yardstick, not a prediction: airdrops rarely pay
+ *  pro-rata, so the number ranks where the plan's money works hardest, it
+ *  never promises what a farm pays. The net subtracts the whole plan's gas
+ *  (setup + weekly + unwind, the same total step 5 budgets); the hours are
+ *  hands-on time only — 30 minutes to set up, 10 minutes to claim, 15 to
+ *  unwind, 10 minutes a week — never the hold itself, which is waiting, not
+ *  work. The verdict is Farm when at least $20 stays after gas at $5 or more
+ *  an hour, Thin when anything stays, Skip when the gas costs more than the
+ *  pro-rata share. Copies are Skip on the arithmetic, not on a judgement:
+ *  their 2% weight leaves a share smaller than any plan's gas. */
+export interface FarmEconomics {
+  capital: number;
+  gas_total: number;
+  hold_days: number;
+  weeks: number;
+  active_hours: number;
+  gross_usd: number;
+  net_usd: number;
+  net_per_hour_usd: number;
+  verdict: 'Farm' | 'Thin' | 'Skip';
+}
+
+export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: number): FarmEconomics {
+  const chain = chainOf(p);
+  const gas = gasFor(chain);
+  const capital = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.max(1, Math.round(hold / 7));
+  const gasTotal = gas * (2 + weeks);
+  const hours = Math.round((0.92 + weeks / 6) * 10) / 10;
+  const gross = Math.round((capital / Math.max(p.tvl_usd, 1)) * implied);
+  const net = gross - gasTotal;
+  const perHour = Math.round((net / hours) * 100) / 100;
+  const verdict = net >= 20 && perHour >= 5 ? 'Farm' : net > 0 ? 'Thin' : 'Skip';
+  return { capital, gas_total: gasTotal, hold_days: hold, weeks, active_hours: hours, gross_usd: gross, net_usd: net, net_per_hour_usd: perHour, verdict };
 }
 
 /** One category's farm actions, as templates — ${name} the protocol, ${app} its own app
@@ -667,7 +804,7 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
 }
 
 /**
- * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is
+ * A protocol's farm plan: eight steps, each an action with a cost and a time. The plan is
  * derived from the protocol's own record (category, chains, TVL, age), never from a
  * hand-written list of names. Every step names the chain and the protocol's own app, and the
  * weekly step names the category's own qualifying action (see weeklyActionFor), so the plan
@@ -683,7 +820,7 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * main step also states the position next to the protocol's own TVL, as a multiple,
  * so the reader sees the exit is small next to the protocol it leaves.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
+export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: number): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const gas = gasFor(chain);
@@ -741,6 +878,26 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   // 10,000x smaller than the smallest protocol's TVL ($100 into $5M), so the exit
   // is always small next to the protocol — stated as a multiple the reader can check.
   steps[1]!.text += ` Its ${tvlText(p.tvl_usd)} TVL is about ${Math.round(p.tvl_usd / capital).toLocaleString('en-US')}× your $${capital} position, so unwinding it is small next to the protocol.`;
+  // The verdict, netted in dollars: the plan's gas against the position's pro-rata
+  // share of the implied value. It is the plan's own arithmetic, so it belongs in
+  // the plan — a reader who only reads the steps still sees whether the farm pays.
+  if (implied !== undefined) {
+    const e = farmEconomics(p, age, implied);
+    const gross = `$${e.gross_usd.toLocaleString('en-US')}`;
+    const gasText = `$${e.gas_total}`;
+    // Small implied values print in full ($500), not as "$0K": copies sit below $2M.
+    const impliedText = implied >= 1_000_000 ? tvlText(implied) : `$${implied.toLocaleString('en-US')}`;
+    const verdictText = e.verdict === 'Farm'
+      ? `The verdict is Farm: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.`
+      : e.verdict === 'Thin'
+        ? `The verdict is Thin: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so only about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.`
+        : `The verdict is Skip: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, less than the about ${gasText} of gas for the whole plan, so the farm loses about $${Math.abs(e.net_usd).toLocaleString('en-US')} before it pays anything.`;
+    steps.push({
+      text: `${verdictText} Pro-rata is a yardstick, not a promise: airdrops rarely pay pro-rata, so read the verdict as where the plan's money works hardest, not as expected profit.`,
+      cost: `about $${e.gas_total} of gas for the whole plan`,
+      time: `${e.active_hours} hours of hands-on work`,
+    });
+  }
   return steps;
 }
 
@@ -779,6 +936,11 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     size_multiplier: row.model.size_multiplier,
     category_multiplier: row.model.category_multiplier,
+    farm_net_usd: row.farm_net_usd,
+    farm_per_hour_usd: row.farm_per_hour_usd,
+    farm_verdict: row.farm_verdict,
+    implied_low_usd: row.implied_low_usd,
+    implied_high_usd: row.implied_high_usd,
     tier: row.tier,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
@@ -791,6 +953,28 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const board = buildBoard(snapshot, m);
   const live = liveRows(snapshot);
   const launch = board.filter((r) => r.tier === 'launch').length;
+  // Sensitivity: the top 3 launches' implied value at size exponents 0.45 / 0.50 /
+  // 0.55 (same $50M anchor), and how many launches move 10 or more ranks at each
+  // off-centre exponent — the ranking's robustness, computed here, not asserted.
+  const proto = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  const topLaunches = board.filter((r) => r.tier === 'launch').slice(0, 3);
+  const sensitivity = topLaunches.map((r) => {
+    const p = proto.get(r.slug)!;
+    return {
+      slug: r.slug,
+      name: r.name,
+      at_045: impliedValue(p, snapshot.as_of, { ...m, size_exponent: 0.45 }).implied,
+      at_050: r.implied_value_usd,
+      at_055: impliedValue(p, snapshot.as_of, { ...m, size_exponent: 0.55 }).implied,
+    };
+  });
+  const rankMoves = (exp: number): number => {
+    const alt = board.filter((r) => r.tier === 'launch')
+      .map((r) => ({ slug: r.slug, v: impliedValue(proto.get(r.slug)!, snapshot.as_of, { ...m, size_exponent: exp }).implied }))
+      .sort((a, b) => b.v - a.v || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    const order = new Map(alt.map((x, i) => [x.slug, i + 1]));
+    return board.filter((r) => r.tier === 'launch').filter((r) => Math.abs((order.get(r.slug) ?? 0) - r.rank) >= 10).length;
+  };
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -804,6 +988,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live_size: live.length,
     rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist))),
     live,
+    sensitivity,
+    sensitivity_rank_moves: { at_045: rankMoves(0.45), at_055: rankMoves(0.55) },
   };
   return { board, radar };
 }

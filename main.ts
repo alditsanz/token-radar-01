@@ -7,7 +7,10 @@
 // the page as data.js, copies dashboard/ and screenshots/ to /output, and writes
 // /output/dossier.json with the vendored make.fun library. The page recomputes each row's
 // implied value from the snapshot figures with the same model, so the screenshots and the
-// code agree. Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
+// code agree. The board also carries each row's farm verdict (Farm / Thin / Skip, netted in
+// dollars per hour of hands-on work), its middle-half value range, and the model's blind
+// test and sensitivity table, so the dashboard can show the proof next to the ranking.
+// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
