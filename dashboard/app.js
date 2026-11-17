@@ -186,7 +186,9 @@
     function tabBtn(tab, label) {
       return el('button', { type: 'button', 'aria-pressed': state.tab === tab ? 'true' : 'false', text: label, onclick: function () { state.tab = tab; render(); } });
     }
-    var shown = state.tab === 'live' ? DATA.live.length : filteredRows().length;
+    var shown = filteredRows().length;
+    var total = state.tab === 'live' ? DATA.live.length : baseRows().length;
+    var tabLabel = state.tab === 'live' ? 'live-token protocols' : state.tab === 'copy' ? 'copies' : 'launches';
     return el('div', { class: 'controls' },
       el('div', { class: 'field grow' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), cat),
@@ -194,7 +196,7 @@
       el('div', { class: 'field' }, el('label', { for: 'growth', text: '7d growth' }), growth),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
-      el('span', { class: 'count', text: shown + ' rows shown' })
+      el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' })
     );
   }
 
@@ -207,17 +209,21 @@
     );
   }
 
+  function emptyPanel() {
+    return el('div', { class: 'panel' }, el('div', { class: 'empty' },
+      el('h2', { text: 'No protocol matches that filter' }),
+      el('p', { text: 'Clear the search or pick another category, chain or growth filter to see the board again.' }),
+      el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.growth = 'all'; writeHash(); render(); } })
+    ));
+  }
+
   function boardTable() {
     var list = sortedRows(filteredRows());
-    if (list.length === 0) {
-      return el('div', { class: 'panel' }, el('div', { class: 'empty' },
-        el('h2', { text: 'No protocol matches that filter' }),
-        el('p', { text: 'Clear the search or pick another category, chain or growth filter to see the board again.' }),
-        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.growth = 'all'; writeHash(); render(); } })
-      ));
-    }
+    if (list.length === 0) return emptyPanel();
+    // Bars scale to the tab's own largest value, not the filtered list's: the same row
+    // shows the same bar in every filter of its tab, so bars stay comparable at a glance.
     var max = 1;
-    list.forEach(function (r) { if (r.implied_value_usd > max) max = r.implied_value_usd; });
+    baseRows().forEach(function (r) { if (r.implied_value_usd > max) max = r.implied_value_usd; });
     var tbody = el('tbody');
     list.forEach(function (r) {
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
@@ -268,8 +274,12 @@
   }
 
   function liveTable() {
+    // The live tab filters like the board tabs: the same search, category, chain and
+    // growth filters apply, and an empty result shows the empty panel, not bare headers.
+    var list = sortedRows(filteredRows());
+    if (list.length === 0) return emptyPanel();
     var tbody = el('tbody');
-    sortedRows(DATA.live).forEach(function (r) {
+    list.forEach(function (r) {
       tbody.appendChild(el('tr', null,
         el('td', { class: 'num', text: 'live' }),
         el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }), el('div', { class: 'reason', text: fmtUsd(r.tvl_usd) + ' TVL · ' + fmtPct(r.change_7d) + ' in 7d' }))),

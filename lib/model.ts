@@ -368,6 +368,14 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   if (c.includes('chain')) return `Use $${capital} of the chain's gas token in ${name}'s own app on ${chain} and keep the activity going.`;
   if (c.includes('payment')) return `Spend $${capital} through ${name}'s payments app on ${chain} and keep the card or account active.`;
   if (c.includes('privacy')) return `Use $${capital} through ${name}'s private app on ${chain} and keep the shielded balance.`;
+  if (c.includes('basis')) return `Open a $${capital} basis trade on ${name} through ${app}: buy spot and short the same amount on the perpetual, and keep both legs open.`;
+  if (c.includes('liquidity manager')) return `Deposit $${capital} into a ${name} managed vault through ${app} and let it rebalance the range for you.`;
+  if (c.includes('governance')) return `Lock or delegate $${capital} of voting power through ${app} and vote on the proposals that are open.`;
+  if (c.includes('btc')) return `Deposit $${capital} of BTC through ${app} and hold the receipt token it issues.`;
+  if (c.includes('cedefi')) return `Deposit $${capital} into ${name}'s CeDeFi vault through ${app} and keep the position open.`;
+  if (c.includes('otc')) return `Fill a $${capital} OTC order on ${name} through ${app} and settle it on-chain.`;
+  if (c.includes('card')) return `Load $${capital} onto the ${name} card through ${app} and spend it so the account stays active.`;
+  if (c.includes('cex') || c === 'centralized exchange') return `Open an account with ${name} through its own app and deposit $${capital} to trade.`;
   return `Deposit $${capital} of USDC into ${name} through ${app} and keep the position open.`;
 }
 
@@ -386,6 +394,14 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
   if (c.includes('stable')) return `Redeem a small part of the stable position on ${app}, then deposit it back.`;
   if (c.includes('rwa')) return `Claim the yield the asset paid on ${app} and reinvest it in the same asset.`;
   if (c.includes('insurance')) return `File a test claim for a covered event on ${app} and follow it to a decision.`;
+  if (c.includes('basis')) return `Rebalance the two legs on ${app} when the funding rate flips against the trade.`;
+  if (c.includes('liquidity manager')) return `Claim the rebalancing fees ${name} earned on ${app}.`;
+  if (c.includes('governance')) return `Vote on a second proposal on ${app} once it opens.`;
+  if (c.includes('btc')) return `Move a small amount of the receipt token on ${app} so the position is used, not just held.`;
+  if (c.includes('cedefi')) return `Claim the vault yield ${name} paid on ${app}.`;
+  if (c.includes('otc')) return `Fill a second, smaller OTC order on ${app}.`;
+  if (c.includes('card')) return `Spend a small amount through the card on ${app}.`;
+  if (c.includes('cex')) return `Place a second, smaller trade on ${app}.`;
   return `Make a second, smaller deposit of $${Math.max(10, Math.round(capital / 5))} on ${app}.`;
 }
 
@@ -412,7 +428,46 @@ function weeklyActionFor(p: SnapshotProtocol, capital: number, chain: string): s
   if (c.includes('chain')) return `Make one small transaction in ${name}'s own app on ${chain} each week.`;
   if (c.includes('payment')) return `Spend $${small} through ${name}'s payments app on ${chain} each week.`;
   if (c.includes('privacy')) return `Refresh the shielded balance through ${name}'s private app on ${chain} each week.`;
+  if (c.includes('basis')) return `Check the funding rate on ${app} each week and rebalance the legs when it flips.`;
+  if (c.includes('liquidity manager')) return `Claim the vault fees on ${app} each week and add them back to the position.`;
+  if (c.includes('governance')) return `Vote on each new proposal on ${app} every week while the position is locked.`;
+  if (c.includes('btc')) return `Top up the BTC deposit by $${small} on ${app} each week so the position keeps growing.`;
+  if (c.includes('cedefi')) return `Claim the vault yield on ${app} each week and redeposit it into the same vault.`;
+  if (c.includes('otc')) return `Place one small OTC order a week on ${app}.`;
+  if (c.includes('card')) return `Spend $${small} through the ${name} card on ${chain} each week.`;
+  if (c.includes('cex')) return `Make one small trade a week on ${app}.`;
   return `Deposit $${small} of USDC into ${name} through ${app} each week so the position keeps qualifying.`;
+}
+
+/** The category's exit step: how to unwind this protocol's own positions, in the order
+ *  that does not strand funds — repay before withdrawing a loan, close the short leg
+ *  before selling the spot leg of a basis trade, redeem before withdrawing a vault.
+ *  The farm log stays in every version: the step is specific about the exit and keeps the
+ *  record-keeping, instead of repeating one generic line on all 342 rows. */
+function exitActionFor(p: SnapshotProtocol, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  const app = `${name}'s own app on ${chain}`;
+  const log = `and write the wallet, the dates and every transaction in a farm log.`;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `To exit, repay the borrow first, then withdraw the supply — in that order — ${log}`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `To exit, claim the pool fees first, then remove the liquidity, ${log}`;
+  if (c.includes('bridge')) return `To exit, bridge the funds back to the chain you started on, ${log}`;
+  if (c.includes('staking') || c.includes('restak')) return `To exit, claim the staking rewards first, then unstake, ${log}`;
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `To exit, close every open trade first, then withdraw the margin, ${log}`;
+  if (c.includes('prediction')) return `To exit, settle or close every open market position, then withdraw, ${log}`;
+  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `To exit, claim the vault yield first, then withdraw from the vault, ${log}`;
+  if (c.includes('stable')) return `To exit, redeem the stable position back to USDC, ${log}`;
+  if (c.includes('rwa')) return `To exit, redeem the yield asset on ${app}, ${log}`;
+  if (c.includes('insurance')) return `To exit, let the cover lapse or cancel the policy, ${log}`;
+  if (c.includes('basis')) return `To exit, close the short leg first, then sell the spot leg, ${log}`;
+  if (c.includes('liquidity manager')) return `To exit, claim the vault fees first, then withdraw from the managed vault, ${log}`;
+  if (c.includes('governance')) return `To exit, unlock the voting power after the vote closes, ${log}`;
+  if (c.includes('btc')) return `To exit, redeem the receipt token for BTC on ${app}, ${log}`;
+  if (c.includes('cedefi')) return `To exit, withdraw from the CeDeFi vault on ${app}, ${log}`;
+  if (c.includes('otc')) return `To exit, cancel any open OTC orders on ${app}, then withdraw, ${log}`;
+  if (c.includes('card')) return `To exit, spend down or withdraw the card balance on ${app}, ${log}`;
+  if (c.includes('cex')) return `To exit, withdraw the balance from ${name} to your own wallet, ${log}`;
+  return `Write the wallet, the dates and every transaction in a farm log, then unwind in reverse order when you exit.`;
 }
 
 /**
@@ -421,6 +476,8 @@ function weeklyActionFor(p: SnapshotProtocol, capital: number, chain: string): s
  * hand-written list of names. Every step names the chain and the protocol's own app, and the
  * weekly step names the category's own qualifying action (see weeklyActionFor), so the plan
  * tells the reader exactly which interaction to repeat — not a generic list of options.
+ * The exit step names the category's own unwind order too (see exitActionFor), so the
+ * last step is specific to the positions the plan opened.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -459,9 +516,9 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction in a farm log, then unwind in reverse order when you exit.`,
-      cost: 'nothing but the log',
-      time: '5 minutes',
+      text: exitActionFor(p, chain),
+      cost: `about $${gas} of gas to unwind on ${chain}`,
+      time: '15 minutes to exit',
     },
   ];
 }
