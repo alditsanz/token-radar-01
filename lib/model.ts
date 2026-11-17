@@ -389,10 +389,38 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
   return `Make a second, smaller deposit of $${Math.max(10, Math.round(capital / 5))} on ${app}.`;
 }
 
+/** The category's weekly qualifying action: the one interaction that keeps the position
+ *  counting, repeated every week. A generic "do something each week" names four different
+ *  actions — a deposit, a borrow, a swap, a vote — and for most protocols three of them make
+ *  no sense: a borrow is meaningless for a vault, a vote for a lending pool. This names the
+ *  action that fits this protocol's own category, so the reader knows exactly what to repeat. */
+function weeklyActionFor(p: SnapshotProtocol, capital: number, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  const app = `${name}'s own app on ${chain}`;
+  const small = Math.max(10, Math.round(capital / 5));
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Top up the supply by $${small} on ${app} each week so the position keeps growing.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Collect the pool fees on ${app} each week and add them back to the position.`;
+  if (c.includes('bridge')) return `Bridge $${small} through ${app} each week, alternating direction so the route stays active.`;
+  if (c.includes('staking') || c.includes('restak')) return `Claim or restake the staking rewards on ${app} once a week.`;
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `Open and close one small hedged trade a week on ${app}.`;
+  if (c.includes('prediction')) return `Place one small market position a week on ${app}.`;
+  if (c.includes('curator') || c.includes('allocator') || c.includes('risk')) return `Claim the vault yield on ${app} each week and redeposit it into the same vault.`;
+  if (c.includes('stable')) return `Top up the stable position by $${small} on ${app} each week.`;
+  if (c.includes('rwa')) return `Top up the position by $${small} on ${app} each week so the holding keeps growing.`;
+  if (c.includes('insurance')) return `Renew or top up the cover on ${app} each week while the policy runs.`;
+  if (c.includes('chain')) return `Make one small transaction in ${name}'s own app on ${chain} each week.`;
+  if (c.includes('payment')) return `Spend $${small} through ${name}'s payments app on ${chain} each week.`;
+  if (c.includes('privacy')) return `Refresh the shielded balance through ${name}'s private app on ${chain} each week.`;
+  return `Deposit $${small} of USDC into ${name} through ${app} each week so the position keeps qualifying.`;
+}
+
 /**
  * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is
  * derived from the protocol's own record (category, chains, TVL, age), never from a
- * hand-written list of names. Every step names the chain and the protocol's own app.
+ * hand-written list of names. Every step names the chain and the protocol's own app, and the
+ * weekly step names the category's own qualifying action (see weeklyActionFor), so the plan
+ * tells the reader exactly which interaction to repeat — not a generic list of options.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -416,7 +444,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: `Make one qualifying action each week on ${chain}, such as a deposit, a borrow, a swap or a vote.`,
+      text: weeklyActionFor(p, capital, chain),
       cost: `about $${gas} of gas a week on ${chain}`,
       time: '10 minutes a week',
     },
