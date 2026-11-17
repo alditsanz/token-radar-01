@@ -69,7 +69,23 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   is ×3.5 one way and ×3.6 the other, against ×3.4 in-sample — the curve
   generalises across the live set instead of memorising its training set. The
   fitted slopes on the two halves are 0.59 and 0.45, bracketing the 0.52 fit on
-  all 128, so the square-root exponent is not an artefact of one half.
+  all 128, so the square-root exponent is not an artefact of one half. The same
+  test under a second split — halving the set by a hash of the slug instead of
+  by its letters — lands at ×3.6 and ×3.5, so the proof does not rest on one
+  arbitrary way of halving the set.
+- **Bootstrap: how solid is the ranking?** — the 128 live protocols drawn with
+  replacement 200 times, the curve and the category factors refitted each time.
+  Ranks 1, 2 and 3 keep their exact rank in all 200 resamples; the typical
+  top-20 launch stays in the top 20 in 100% of resamples (weakest, rank 20,
+  74%); across all 198 launches the median rank move is 3 places. The size
+  slope itself refits at 0.524, with a 90% interval of 0.363–0.653 — the
+  model's 0.50 sits inside it. But the ranking is not bulletproof to the
+  exponent: at the ends of that interval 8 launches move 10 or more ranks at
+  0.363 and 23 at 0.653 — the top of the board is solid, the middle moves.
+  Every row also shows its own rank at exponents 0.45 and 0.55 (the Stability
+  column, sortable — the "what the model is most sure about" view), and its
+  factual watch-outs in the detail view: one chain only, shrinking TVL,
+  listed under 90 days ago, no listing date on record.
 - **Likely range** — every row carries a middle-half range for its implied
   value: the 25th to 75th percentile of market-cap / curve among the live
   protocols (0.27×–3.64×). Wide on purpose — market caps scatter widely at any

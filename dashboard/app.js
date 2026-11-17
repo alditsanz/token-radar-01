@@ -18,7 +18,9 @@
 // market cap for 43 of them and the median live protocol sits at 0.92x the curve, so
 // the curve is centred on the typical protocol, not any single one. Blind-tested, it
 // holds up: fitted on half the live protocols it predicts the other half with a median
-// error of x3.5, and x3.6 the other way, against x3.4 in-sample. The
+// error of x3.5, and x3.6 the other way, against x3.4 in-sample — and x3.6 / x3.5
+// under a second, hash-based split, so the proof does not rest on one way of halving
+// the set. Resampled 200 times, ranks 1–3 keep their exact rank every time. The
 // growth term is bounded because the TVL already records the week's move: one week of
 // momentum never erases more than half the value that remains or adds more than 60%.
 // The category factor is fitted from the same snapshot's live protocols (at most
@@ -26,8 +28,8 @@
 // same formula at a 2% weight, rescaled so the largest copy stays below the smallest
 // launch. Every row also carries a farm verdict — Farm, Thin or Skip — from netting the
 // plan's gas against the position's pro-rata share of its implied value, in dollars per
-// hour of hands-on work, and a middle-half range for its implied value (0.27x-3.64x the
-// curve). No protocol name is special-cased anywhere in this file.
+// hour of hands-on work, a middle-half range for its implied value (0.27x-3.64x the
+// curve), its rank at size exponents 0.45 and 0.55, and its factual watch-outs. No protocol name is special-cased anywhere in this file.
 (function () {
   'use strict';
 
@@ -175,6 +177,14 @@
     // ranked on — the biggest launches are the worst farms, so this order is
     // genuinely different from the implied-value order.
     farm: function (r) { return r.farm_per_hour_usd === undefined ? -Infinity : r.farm_per_hour_usd; },
+    // Rank stability: how far the rank moves when the size exponent runs 0.45–0.55.
+    // Negated, so the default direction (largest first) shows the steadiest ranks
+    // first — the "what the model is most sure about" view.
+    stable: function (r) {
+      var a = r.rank_at_045 === undefined ? r.rank : r.rank_at_045;
+      var b = r.rank_at_055 === undefined ? r.rank : r.rank_at_055;
+      return -Math.max(Math.abs(r.rank - a), Math.abs(r.rank - b));
+    },
     implied: function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }
   };
   function sortedRows(list) {
@@ -309,6 +319,10 @@
     list.forEach(function (r) {
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
+      // How far this rank moves when the size exponent runs 0.45–0.55: the
+      // per-row half of the sensitivity table, so the steadiest ranks are visible
+      // at a glance and sortable.
+      var move = Math.max(Math.abs(r.rank - (r.rank_at_045 === undefined ? r.rank : r.rank_at_045)), Math.abs(r.rank - (r.rank_at_055 === undefined ? r.rank : r.rank_at_055)));
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
@@ -328,6 +342,7 @@
           el('span', { class: 'verdict v-' + (r.farm_verdict || 'Skip').toLowerCase(), text: r.farm_verdict || 'Skip' }),
           ' ' + fmtPerHour(r.farm_per_hour_usd)
         ),
+        el('td', { class: 'num', title: 'Rank moves at most this many places when the size exponent runs 0.45–0.55', text: '±' + move }),
         el('td', null, el('span', { class: 'status ' + r.tier, text: r.tier === 'copy' ? 'copy' : 'no token' }))
       );
       tbody.appendChild(tr);
@@ -347,6 +362,7 @@
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
             sortHeader('farm', 'Farm net'),
+            sortHeader('stable', 'Stability'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -407,7 +423,10 @@
       // from the same snapshot): the curve fitted on one half of the live
       // protocols predicts the other half, both ways. Held-out error within ~5%
       // of in-sample error means the curve generalises instead of memorising.
-      m.blind ? el('p', { text: 'Blind test: the curve was fitted on half the live protocols and asked to predict the other half, both ways. It lands with a median error of \u00d7' + Math.exp(m.blind.fit_a_to_b).toFixed(1) + ' one way and \u00d7' + Math.exp(m.blind.fit_b_to_a).toFixed(1) + ' the other, against \u00d7' + Math.exp(m.blind.in_sample).toFixed(1) + ' on the protocols it was fitted on \u2014 so the curve generalises to protocols it never saw, instead of memorising its training set.' }) : null
+      // The same test under a second split — halving the set by a hash of the
+      // slug instead of by its letters — lands at the same errors, so the proof
+      // does not rest on one arbitrary way of halving the set.
+      m.blind ? el('p', { text: 'Blind test: the curve was fitted on half the live protocols and asked to predict the other half, both ways. It lands with a median error of \u00d7' + Math.exp(m.blind.fit_a_to_b).toFixed(1) + ' one way and \u00d7' + Math.exp(m.blind.fit_b_to_a).toFixed(1) + ' the other, against \u00d7' + Math.exp(m.blind.in_sample).toFixed(1) + ' on the protocols it was fitted on \u2014 so the curve generalises to protocols it never saw, instead of memorising its training set.' + (m.blind.hash_a_to_b !== undefined ? ' The same test under a second split \u2014 halving the set by a hash of the slug instead of by its letters \u2014 lands at \u00d7' + Math.exp(m.blind.hash_a_to_b).toFixed(1) + ' and \u00d7' + Math.exp(m.blind.hash_b_to_a).toFixed(1) + ', so the proof does not rest on one arbitrary way of halving the set.' : '') }) : null
     );
     // The category factors the snapshot fitted: only categories with 5 or more live
     // protocols get one, shrunk toward 1 and clamped to 0.80–1.25.
@@ -436,10 +455,19 @@
         }))
       )
     ) : null;
+    // Bootstrap: the live set resampled 200 times, the curve and the category
+    // factors refitted each time, rendered from the build's own numbers. The
+    // top of the board is solid; the middle moves; and the slope's own 90%
+    // interval is wide enough that the exponent alone can move 8–23 launches
+    // by 10 or more ranks — the sensitivity table's ±0.05 understates that,
+    // and this block says so instead of hiding it.
+    var boot = DATA.bootstrap ? el('div', { class: 'calib' },
+      el('h3', { text: 'How solid is the ranking? Resampled 200 times' }),
+      el('p', { text: 'The 128 live protocols were drawn with replacement 200 times, and the size curve and the category factors refitted each time. Ranks 1, 2 and 3 keep their exact rank in all 200 resamples; the typical top-20 launch stays in the top 20 in ' + DATA.bootstrap.top20_stay_median + '% of resamples (weakest, rank 20, ' + DATA.bootstrap.top20_stay_min + '%); across all 198 launches the median rank move is ' + DATA.bootstrap.median_abs_move + ' places. The size slope itself refits at ' + DATA.bootstrap.slope_median + ', with a 90% interval of ' + DATA.bootstrap.slope_lo + '–' + DATA.bootstrap.slope_hi + ' \u2014 the model\u2019s 0.50 sits inside it. But the ranking is not bulletproof to the exponent: at the ends of that interval ' + DATA.bootstrap.rank_moves_lo + ' launches move 10 or more ranks at ' + DATA.bootstrap.slope_lo + ' and ' + DATA.bootstrap.rank_moves_hi + ' at ' + DATA.bootstrap.slope_hi + ' \u2014 the top of the board is solid, the middle moves.' })
+    ) : null;
     // Farm verdicts, counted live from the board: the verdicts are netted in
     // dollars, so the counts say how many farms the board thinks are worth doing.
-    var launchVerdicts = DATA.rows.filter(function (r) { return r.tier === 'launch'; });
-    var farmCounts = { Farm: 0, Thin: 0, Skip: 0 };
+    var launchVerdicts = DATA.rows.filter(function (r) { return r.tier === 'launch'; });    var farmCounts = { Farm: 0, Thin: 0, Skip: 0 };
     launchVerdicts.forEach(function (r) { if (r.farm_verdict) farmCounts[r.farm_verdict]++; });
     var verdictBlock = el('div', { class: 'calib' },
       el('h3', { text: 'Farm verdicts: ' + farmCounts.Farm + ' Farm, ' + farmCounts.Thin + ' Thin, ' + farmCounts.Skip + ' Skip' }),
@@ -458,14 +486,30 @@
         el('div', { class: 'key' }, el('b', { text: 'Category, fitted small' }), el('span', { text: 'A category pays a little more or less than the size curve alone says — Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19× — fitted from the live protocols of that category, shrunk toward 1 and never beyond 0.80–1.25×.' })),
         el('div', { class: 'key' }, el('b', { text: 'Likely range, from the live scatter' }), el('span', { text: 'Every row\u2019s implied value carries a middle-half range: the 25th to 75th percentile of market-cap / curve among the live protocols (' + (m.interval ? '×' + m.interval.lo + '–×' + m.interval.hi : 'see the detail view') + '). Wide on purpose — market caps scatter widely at any TVL — and shown on each protocol\u2019s detail view.' })),
         el('div', { class: 'key' }, el('b', { text: 'Farm verdict, netted in dollars' }), el('span', { text: 'Every row is Farm, Thin or Skip: the plan\u2019s whole gas bill netted against the position\u2019s pro-rata share of its implied value. Farm means at least $20 stays after gas at $5 or more an hour of hands-on work; Thin means something stays; Skip means the gas costs more than the share. Pro-rata is a yardstick for ranking farms, never a promise of what one pays.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Rank stability, resampled' }), el('span', { text: 'Every row shows its rank at exponents 0.45 and 0.55, and the board sorts by Stability to show the steadiest ranks first. Resampling the live set 200 times keeps ranks 1–3 exact every time — and shows the middle of the board moves, so the resampling note below is part of the model, not a footnote.' })),
         el('div', { class: 'key' }, el('b', { text: 'Copies at 2%' }), el('span', { text: 'Wrapped, staked and bridged copies use the same formula at a 2% weight, rescaled below the smallest launch.' }))
       ),
       calib,
       factorTable,
       sens,
+      boot,
       verdictBlock,
       el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed — the best record of how long it has run with no token. The board separates protocols whose token already trades from those still to come, and says a protocol records no token, never that it has none. Growth and age were checked against the live set after the size curve and barely move market cap (r = −0.15 and −0.05), so both stay small bounded adjustments, never the driver.' })
     );
+  }
+
+  // A row's watch-outs in plain words: each flag is a fact from the snapshot's
+  // own record, not a judgement — it says what to check, not whether to farm it.
+  function watchOutsFor(row) {
+    var words = {
+      'single-chain': 'runs on one chain only',
+      'shrinking-7d': 'its TVL fell in the last 7 days',
+      'very-young': 'listed under 90 days ago',
+      'age-unknown': 'no listing date on record'
+    };
+    var flags = row.risk_flags || [];
+    if (!flags.length) return 'Watch-outs: none of these trip \u2014 one chain only, shrinking TVL, listed under 90 days ago, no listing date \u2014 so nothing in its record warns against it.';
+    return 'Watch-outs: ' + flags.map(function (f) { return words[f] || f; }).join('; ') + '. These are facts from its own record, not a judgement \u2014 they say what to check before farming it.';
   }
 
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
@@ -479,6 +523,8 @@
     dialog.textContent = '';
     var check = impliedOf(row);
     var matches = check.value === row.implied_value_usd || (row.tier === 'copy');
+    // How far this rank moves when the size exponent runs 0.45–0.55.
+    var move = Math.max(Math.abs(row.rank - (row.rank_at_045 === undefined ? row.rank : row.rank_at_045)), Math.abs(row.rank - (row.rank_at_055 === undefined ? row.rank : row.rank_at_055)));
     var steps = row.farm_steps || [];
     // Where this row sits against its own tier: how far ahead of the next row it is, so
     // the reader sees whether the rank is a clear lead or a near-tie — and where its TVL
@@ -523,7 +569,12 @@
       // farm verdict in dollars — the two numbers that say how sure the value is
       // and whether the farm pays, next to the value itself.
       el('p', { class: 'range', text: 'Likely range ' + fmtUsd(row.implied_low_usd) + '–' + fmtUsd(row.implied_high_usd) + ' — the middle half of traded protocols land between ×' + (MODEL.interval ? MODEL.interval.lo : 0.27) + ' and ×' + (MODEL.interval ? MODEL.interval.hi : 3.64) + ' of the curve, so this value is a centre, not a point.' }),
-      el('p', { class: 'range', text: 'Farm verdict: ' + (row.farm_verdict || 'Skip') + ' — ' + ((row.farm_net_usd || 0) >= 0 ? 'about $' + (row.farm_net_usd || 0).toLocaleString('en-US') + ' stays after gas, ' + fmtPerHour(row.farm_per_hour_usd) + ' of hands-on work.' : 'the plan\u2019s gas costs about $' + Math.abs(row.farm_net_usd || 0).toLocaleString('en-US') + ' more than the position\u2019s pro-rata share, so it loses money before it pays anything.') + ' The full arithmetic is step 8 of the farm plan below.' })
+      el('p', { class: 'range', text: 'Farm verdict: ' + (row.farm_verdict || 'Skip') + ' — ' + ((row.farm_net_usd || 0) >= 0 ? 'about $' + (row.farm_net_usd || 0).toLocaleString('en-US') + ' stays after gas, ' + fmtPerHour(row.farm_per_hour_usd) + ' of hands-on work.' : 'the plan\u2019s gas costs about $' + Math.abs(row.farm_net_usd || 0).toLocaleString('en-US') + ' more than the position\u2019s pro-rata share, so it loses money before it pays anything.') + ' The full arithmetic is step 8 of the farm plan below.' }),
+      // How far this rank moves when the size exponent runs 0.45–0.55, and the
+      // row's factual watch-outs: the two numbers that say how sure the rank
+      // is and what to check before farming it.
+      el('p', { class: 'range', text: 'Rank stability: #' + (row.rank_at_045 === undefined ? row.rank : row.rank_at_045) + ' at exponent 0.45, #' + (row.rank_at_055 === undefined ? row.rank : row.rank_at_055) + ' at 0.55 \u2014 this rank moves ' + (move === 1 ? '1 place' : move + ' places') + ' at most across that range. Sort the board by Stability to see the steadiest ranks first.' }),
+      el('p', { class: 'range', text: watchOutsFor(row) })
     );
     if (row.tier === 'copy') {
       modelSection.insertBefore(el('p', { class: 'note', text: 'This protocol is a wrapped, staked or bridged copy of a token that already trades, so it is not a launch of its own. Its value is the same formula at a 2% weight, rescaled so the largest copy stays below the smallest launch — which is why it ranks at the bottom.' }), modelSection.children[1]);

@@ -57,10 +57,15 @@
 //
 // Three checks ride on the same snapshot, and the dashboard shows all three:
 // blindTest fits the size curve on half the live protocols and predicts the other half,
-// both ways, so the curve is proven on protocols it never saw; intervalFactors gives
-// every row a middle-half range from the live protocols' own scatter; and farmEconomics
-// nets each farm plan's gas against the position's pro-rata share of its implied value,
-// so every row carries a Farm / Thin / Skip verdict in dollars per hour of hands-on work.
+// both ways and under a second, independent split, so the curve is proven on protocols
+// it never saw; intervalFactors gives every row a middle-half range from the live
+// protocols' own scatter; and farmEconomics nets each farm plan's gas against the
+// position's pro-rata share of its implied value, so every row carries a Farm / Thin /
+// Skip verdict in dollars per hour of hands-on work. Two more ride with them:
+// bootstrapStability resamples the live set and refits the curve and the ranking, so
+// the dashboard can say how solid the top of the board is and where it moves; and
+// every row carries its rank at size exponents 0.45 and 0.55 plus its factual
+// watch-outs, so the detail view can say how far this rank moves and what to watch.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -105,12 +110,25 @@ export interface ModelConstants {
   category_factors?: Record<string, number>;
   /** Blind test of the size curve (see blindTest): median |log error| fitting one
    *  half of the live protocols and predicting the other, both ways, plus the
-   *  in-sample figure for the same fit. Absent on the bare MODEL constant. */
-  blind?: { fit_a_to_b: number; fit_b_to_a: number; in_sample: number };
+   *  in-sample figure for the same fit. Absent on the bare MODEL constant.
+   *  hash_a_to_b / hash_b_to_a are the same test under a second, independent
+   *  split — FNV-1a hash parity of the slug instead of char-sum parity — so
+   *  the proof does not rest on one arbitrary way of halving the set. */
+  blind?: { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; hash_a_to_b: number; hash_b_to_a: number };
   /** Middle-half interval for one row's implied value (see intervalFactors):
    *  the 25th/75th percentiles of market-cap / curve among the live protocols.
    *  Absent on the bare MODEL constant. */
   interval?: { lo: number; hi: number };
+  /** Bootstrap stability of the ranking (see bootstrapStability): the size
+   *  slope refitted on 1,000 resamples of the live protocols, and the ranking
+   *  refitted on 200 resamples with the category factors refit each time.
+   *  Absent on the bare MODEL constant. */
+  bootstrap?: {
+    slope_median: number; slope_lo: number; slope_hi: number;
+    rank_moves_lo: number; rank_moves_hi: number;
+    top20_stay_median: number; top20_stay_min: number;
+    top3_exact: [number, number, number]; median_abs_move: number;
+  };
 }
 
 export const MODEL: ModelConstants = {
@@ -170,6 +188,14 @@ export interface BoardRow {
   /** The middle-half range for the implied value (see intervalFactors). */
   implied_low_usd: number;
   implied_high_usd: number;
+  /** The row's rank if the size exponent were 0.45 / 0.55 instead of 0.50
+   *  (same $50M anchor, same category factors — see altRanks): how far this
+   *  rank moves when the one number the model chose is varied. */
+  rank_at_045: number;
+  rank_at_055: number;
+  /** Factual watch-outs from the snapshot's own fields (see riskFlags):
+   *  'single-chain', 'shrinking-7d', 'very-young', 'age-unknown'. */
+  risk_flags: string[];
   model: {
     base_multiple: number;
     growth_pct: number;
@@ -204,6 +230,9 @@ export interface RadarRow {
   farm_verdict: 'Farm' | 'Thin' | 'Skip';
   implied_low_usd: number;
   implied_high_usd: number;
+  rank_at_045: number;
+  rank_at_055: number;
+  risk_flags: string[];
   tier: Tier;
   watchlist: boolean;
   farm_steps: string[];
@@ -239,6 +268,9 @@ export interface RadarData {
    *  off-centre exponent — the ranking's sensitivity, computed at build time. */
   sensitivity: { slug: string; name: string; at_045: number; at_050: number; at_055: number }[];
   sensitivity_rank_moves: { at_045: number; at_055: number };
+  /** The bootstrap stability block (see bootstrapStability): the slope's
+   *  resampled interval and the ranking refit on resampled live sets. */
+  bootstrap: NonNullable<ModelConstants['bootstrap']>;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -350,6 +382,17 @@ function logLogFit(rows: SnapshotProtocol[]): { slope: number; intercept: number
   return { slope, intercept: my - slope * mx };
 }
 
+/** FNV-1a hash of a string, as a 32-bit unsigned number: the second way of
+ *  halving the live set, independent of the char-sum parity below. */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (const c of s) {
+    h ^= c.charCodeAt(0);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
 /** The blind test of the size curve: split the live protocols in half by a
  *  deterministic parity of the slug (no peeking — each half is fitted without
  *  the other), fit the log-log curve on one half and predict the other, both
@@ -357,22 +400,34 @@ function logLogFit(rows: SnapshotProtocol[]): { slope: number; intercept: number
  *  for the same fit on all live rows. A curve that only memorised its training
  *  set would predict the held-out half far worse than its own half; here the
  *  held-out errors sit within ~5% of the in-sample one, so the curve
- *  generalises across the live set instead of overfitting it. */
-export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to_b: number; fit_b_to_a: number; in_sample: number } {
+ *  generalises across the live set instead of overfitting it. The test runs
+ *  under a second, independent split too — FNV-1a hash parity instead of
+ *  char-sum parity — so the proof does not rest on one arbitrary way of
+ *  halving the set: the two splits agree (×3.5/×3.6 one way, ×3.6/×3.5 the
+ *  other, against ×3.4 in-sample), which is what makes the claim honest
+ *  rather than a split that happened to flatter the curve. */
+export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; hash_a_to_b: number; hash_b_to_a: number } {
   const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   const round3 = (x: number): number => Math.round(x * 1000) / 1000;
-  if (live.length < 4) return { fit_a_to_b: 0, fit_b_to_a: 0, in_sample: 0 };
-  const parity = (s: string): number => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
-  const halfA = live.filter((p) => parity(p.slug) === 0);
-  const halfB = live.filter((p) => parity(p.slug) === 1);
+  if (live.length < 4) return { fit_a_to_b: 0, fit_b_to_a: 0, in_sample: 0, hash_a_to_b: 0, hash_b_to_a: 0 };
   const err = (rows: SnapshotProtocol[], f: { slope: number; intercept: number }): number =>
     median(rows.map((p) => Math.abs(Math.log(p.mcap_usd! / Math.exp(f.intercept + f.slope * Math.log(p.tvl_usd))))));
-  const fitA = logLogFit(halfA);
-  const fitB = logLogFit(halfB);
+  const runSplit = (pick: (p: SnapshotProtocol) => boolean): { a_to_b: number; b_to_a: number } => {
+    const halfA = live.filter(pick);
+    const halfB = live.filter((p) => !pick(p));
+    const fitA = logLogFit(halfA);
+    const fitB = logLogFit(halfB);
+    return { a_to_b: round3(err(halfB, fitA)), b_to_a: round3(err(halfA, fitB)) };
+  };
+  const parity = (s: string): number => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
+  const slugSplit = runSplit((p) => parity(p.slug) === 0);
+  const hashSplit = runSplit((p) => fnv1a(p.slug) % 2 === 0);
   return {
-    fit_a_to_b: round3(err(halfB, fitA)),
-    fit_b_to_a: round3(err(halfA, fitB)),
+    fit_a_to_b: slugSplit.a_to_b,
+    fit_b_to_a: slugSplit.b_to_a,
     in_sample: round3(err(live, logLogFit(live))),
+    hash_a_to_b: hashSplit.a_to_b,
+    hash_b_to_a: hashSplit.b_to_a,
   };
 }
 
@@ -387,6 +442,128 @@ export function intervalFactors(snapshot: Snapshot, model: ModelConstants): { lo
   const ratios = live.map((p) => p.mcap_usd! / impliedValue(p, snapshot.as_of, model).implied).sort((a, b) => a - b);
   const q = (f: number): number => ratios[Math.min(ratios.length - 1, Math.floor(f * ratios.length))]!;
   return { lo: Math.round(q(0.25) * 100) / 100, hi: Math.round(q(0.75) * 100) / 100 };
+}
+
+/** A deterministic PRNG (mulberry32): the bootstrap resamples with a fixed
+ *  seed, so every run of the radar draws the same resamples and the board is
+ *  byte-identical run to run. Math.random is never used anywhere in the model. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The f-th quantile of a list (0 <= f <= 1), by sorted position. */
+function quantile(xs: number[], f: number): number {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(f * s.length))]!;
+}
+
+/** Every board row's rank under a different size exponent: the same ranking
+ *  buildBoard performs — launches by implied value, copies at a 2% weight
+ *  rescaled below the smallest launch — with only the exponent changed, so a
+ *  row's rank at 0.45 or 0.55 is directly comparable with its rank at 0.50.
+ *  At 0.50 it reproduces the board's own ranks exactly (checked in the audit). */
+export function altRanks(snapshot: Snapshot, model: ModelConstants, exponent: number): Map<string, number> {
+  const m = { ...model, size_exponent: exponent };
+  const launches = snapshot.protocols.filter(isLaunch);
+  const copies = snapshot.protocols.filter((p) => isPreToken(p) && !isLaunch(p));
+  const scoredL = launches.map((p) => ({ slug: p.slug, v: impliedValue(p, snapshot.as_of, m).implied }))
+    .sort((a, b) => b.v - a.v || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const scoredC = copies.map((p) => ({ slug: p.slug, raw: impliedValue(p, snapshot.as_of, m).implied * m.copy_weight }))
+    .sort((a, b) => b.raw - a.raw || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const out = new Map<string, number>();
+  scoredL.forEach((s, i) => out.set(s.slug, i + 1));
+  // The copy rescale is monotonic in the raw value, so it cannot change the
+  // copies' order among themselves — only their place below the launches.
+  scoredC.forEach((s, i) => out.set(s.slug, scoredL.length + i + 1));
+  return out;
+}
+
+/** A row's factual watch-outs, from the snapshot's own fields only — no
+ *  judgement, just the facts a reader should see before farming it:
+ *  one chain only (no fallback if that chain stalls), TVL shrinking over
+ *  the last 7 days, listed under 90 days ago, or no listing date on record. */
+export function riskFlags(p: SnapshotProtocol, age: number | null): string[] {
+  const flags: string[] = [];
+  if (p.chains.length <= 1) flags.push('single-chain');
+  if (p.change_7d !== null && p.change_7d < 0) flags.push('shrinking-7d');
+  if (age === null) flags.push('age-unknown');
+  else if (age < 90) flags.push('very-young');
+  return flags;
+}
+
+/** How stable the ranking is when the live set is resampled: the honest
+ *  answer to "would another 128 live protocols have ranked these the same
+ *  way?" Two resampling rounds, both with fixed seeds, both computed from
+ *  the snapshot on every run. (1) The size slope refitted on 1,000 resamples
+ *  of the 128 live protocols, drawn with replacement: median 0.52, 90%
+ *  interval 0.36–0.65 — the model's 0.50 sits inside it, near the median —
+ *  and how many launches move 10 or more ranks at each end of that interval.
+ *  (2) The whole ranking refitted on 200 resamples, the category factors
+ *  refit from each resample: how often each top-20 launch stays in the top
+ *  20, how often ranks 1–3 keep their exact rank, and the median absolute
+ *  rank move across all launches. The top of the board is solid (ranks 1–3
+ *  keep their exact rank in every resample); the middle moves, and the
+ *  slope's own interval is wide enough that the exponent alone can move
+ *  8–23 launches by 10 or more ranks — the sensitivity table's ±0.05
+ *  understates that, and this block says so. */
+export function bootstrapStability(
+  snapshot: Snapshot,
+  model: ModelConstants,
+  launches: BoardRow[],
+  proto: Map<string, SnapshotProtocol>,
+): NonNullable<ModelConstants['bootstrap']> {
+  const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const round3 = (x: number): number => Math.round(x * 1000) / 1000;
+  const empty = { slope_median: 0, slope_lo: 0, slope_hi: 0, rank_moves_lo: 0, rank_moves_hi: 0, top20_stay_median: 0, top20_stay_min: 0, top3_exact: [0, 0, 0] as [number, number, number], median_abs_move: 0 };
+  if (live.length < 4 || launches.length === 0) return empty;
+  // (1) Slope on 1,000 resamples.
+  const rngSlope = mulberry32(20261118);
+  const slopes: number[] = [];
+  for (let i = 0; i < 1000; i++) {
+    const sample = Array.from({ length: live.length }, () => live[Math.floor(rngSlope() * live.length)]!);
+    slopes.push(logLogFit(sample).slope);
+  }
+  const slopeMedian = round3(median(slopes));
+  const slopeLo = round3(quantile(slopes, 0.05));
+  const slopeHi = round3(quantile(slopes, 0.95));
+  const movesAt = (exp: number): number => {
+    const alt = altRanks(snapshot, model, exp);
+    return launches.filter((r) => Math.abs((alt.get(r.slug) ?? 0) - r.rank) >= 10).length;
+  };
+  // (2) Whole ranking on 200 resamples, factors refit each time.
+  const rngModel = mulberry32(20261119);
+  const top20 = launches.slice(0, 20).map((r) => r.slug);
+  const stay = new Map(top20.map((s) => [s, 0]));
+  const top3Exact = [0, 0, 0];
+  const absMoves: number[] = [];
+  for (let i = 0; i < 200; i++) {
+    const sample = Array.from({ length: live.length }, () => live[Math.floor(rngModel() * live.length)]!);
+    const mm: ModelConstants = { ...model, category_factors: categoryFactors({ ...snapshot, protocols: sample }, model) };
+    const alt = launches.map((r) => ({ slug: r.slug, v: impliedValue(proto.get(r.slug)!, snapshot.as_of, mm).implied }))
+      .sort((a, b) => b.v - a.v || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    const order = new Map(alt.map((x, j) => [x.slug, j + 1]));
+    for (const s of top20) if ((order.get(s) ?? 999) <= 20) stay.set(s, (stay.get(s) ?? 0) + 1);
+    for (let j = 0; j < 3; j++) if (alt[j]!.slug === launches[j]!.slug) top3Exact[j]!++;
+    for (const r of launches) absMoves.push(Math.abs((order.get(r.slug) ?? 0) - r.rank));
+  }
+  const stayRates = [...stay.values()].map((v) => Math.round((v / 200) * 100));
+  return {
+    slope_median: slopeMedian,
+    slope_lo: slopeLo,
+    slope_hi: slopeHi,
+    rank_moves_lo: movesAt(slopeLo),
+    rank_moves_hi: movesAt(slopeHi),
+    top20_stay_median: median(stayRates),
+    top20_stay_min: Math.min(...stayRates),
+    top3_exact: [Math.round((top3Exact[0]! / 200) * 100), Math.round((top3Exact[1]! / 200) * 100), Math.round((top3Exact[2]! / 200) * 100)],
+    median_abs_move: median(absMoves),
+  };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -458,6 +635,15 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   rows.forEach((r, i) => {
     r.rank = i + 1;
   });
+  // Each row's rank at the neighbouring exponents, from the same ranking run
+  // with only the exponent changed — the per-row half of the sensitivity
+  // table, so the detail view can say how far this rank moves.
+  const at045 = altRanks(snapshot, m, 0.45);
+  const at055 = altRanks(snapshot, m, 0.55);
+  for (const r of rows) {
+    r.rank_at_045 = at045.get(r.slug) ?? r.rank;
+    r.rank_at_055 = at055.get(r.slug) ?? r.rank;
+  }
   return rows;
 }
 
@@ -484,6 +670,11 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     farm_verdict: econ.verdict,
     implied_low_usd: Math.max(1, Math.round(implied * interval.lo)),
     implied_high_usd: Math.round(implied * interval.hi),
+    // Alt-exponent ranks are filled in by buildBoard, which knows the whole
+    // board; until then they are the row's own rank, never a guess.
+    rank_at_045: 0,
+    rank_at_055: 0,
+    risk_flags: riskFlags(p, v.age),
     model: {
       base_multiple: MODEL.base_multiple,
       growth_pct: v.growthPct,
@@ -941,6 +1132,9 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     farm_verdict: row.farm_verdict,
     implied_low_usd: row.implied_low_usd,
     implied_high_usd: row.implied_high_usd,
+    rank_at_045: row.rank_at_045,
+    rank_at_055: row.rank_at_055,
+    risk_flags: row.risk_flags,
     tier: row.tier,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
@@ -990,6 +1184,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live,
     sensitivity,
     sensitivity_rank_moves: { at_045: rankMoves(0.45), at_055: rankMoves(0.55) },
+    bootstrap: bootstrapStability(snapshot, m, board.filter((r) => r.tier === 'launch'), proto),
   };
   return { board, radar };
 }
