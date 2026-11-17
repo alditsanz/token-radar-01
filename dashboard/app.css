@@ -1,4 +1,4 @@
-/* Token Radar (radar-2). Palette: deep navy header, paper cards, emerald value bars. No framework, no network. */
+/* Token Radar (radar-3). Palette: deep navy header, paper cards, emerald value bars. No framework, no network. */
 :root{--ink:#101828;--ink-soft:#344054;--muted:#667085;--line:#d0d5dd;--bg:#eef1f4;--card:#fff;--navy:#10233f;--navy-soft:#1b355e;--emerald:#0e7a5f;--emerald-soft:#e6f4f0;--amber:#b45309;--amber-soft:#fdf3e3;--red:#b42318;--green:#067647;--radius:10px;--space:16px}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -29,6 +29,8 @@ input,select{font:inherit;color:inherit}
 .field label,.field .sub{font-size:12px;font-weight:650;color:var(--muted)}
 .field input,.field select{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;width:100%}
 .tabs{display:flex;gap:6px;flex-wrap:wrap}
+.check{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:650;color:var(--muted);align-self:center;cursor:pointer}
+.check input{accent-color:var(--emerald);width:16px;height:16px}
 .tabs button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 13px;font-weight:650;color:var(--ink-soft)}
 .tabs button[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
 .count{margin-left:auto;font-size:13px;color:var(--muted);align-self:center}
@@ -77,6 +79,8 @@ th button:hover{color:var(--ink)}
 dialog.detail{border:1px solid var(--line);border-radius:14px;padding:0;max-width:680px;width:calc(100% - 32px);box-shadow:0 18px 50px rgba(16,35,63,.28)}
 dialog.detail::backdrop{background:rgba(16,35,63,.45)}
 .detail-head{display:flex;justify-content:space-between;gap:16px;padding:18px 20px 0}
+.rank-context{padding:0 20px;margin:10px 0 0;font-size:13.5px;color:var(--ink-soft)}
+.rank-context::before{content:'▸ ';color:var(--emerald);font-weight:800}
 .detail-head h2{margin:2px 0 4px;font-size:22px}
 .detail-head .kicker{font-size:12.5px;font-weight:700;color:var(--emerald);text-transform:uppercase;letter-spacing:.5px}
 .close{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px;height:fit-content;font-weight:650}

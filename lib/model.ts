@@ -10,8 +10,13 @@
 // Implied value follows only from the snapshot's own figures:
 //
 //   implied = max(1, round(tvl_usd x 0.30 x growthMult x maturityMult))
-//   growthMult   = 1 + clamp(change_7d, -80, 200) / 100 x (0.8 up / 1.2 down), null counts as 0
-//                  (a shrinking TVL hurts more than a growing one helps)
+//   growthMult   = min(1.6, max(0.5, 1 + clamp(change_7d, -80, 200) / 100 x (0.8 up / 1.2 down))), null counts as 0
+//                  (a shrinking TVL hurts more than a growing one helps; the term is bounded
+//                   because the TVL already records the week's move — one bad week never erases
+//                   more than half the value that remains, and one good week never adds more than
+//                   60% on top of a TVL that already includes the spike: the two most distorted
+//                   rows of the old unbounded term were a protocol down 73% in a week, valued at
+//                   13% of its remaining TVL, and one up 4,448% in a week, valued at 260%)
 //   maturityMult = 0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)
 //                  (age_days unknown: 365; the curve rises fast, then plateaus)
 //
@@ -50,6 +55,8 @@ export interface ModelConstants {
   growth_weight_down: number;
   growth_floor: number;
   growth_cap: number;
+  growth_mult_floor: number;
+  growth_mult_cap: number;
   maturity_floor: number;
   maturity_range: number;
   maturity_days: number;
@@ -63,6 +70,8 @@ export const MODEL: ModelConstants = {
   growth_weight_down: 1.2,
   growth_floor: -80,
   growth_cap: 200,
+  growth_mult_floor: 0.5,
+  growth_mult_cap: 1.6,
   maturity_floor: 0.6,
   maturity_range: 0.4,
   maturity_days: 1095,
@@ -71,7 +80,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -129,6 +138,7 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   tier: Tier;
+  watchlist: boolean;
   farm_steps: string[];
 }
 
@@ -189,7 +199,9 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const weight = growthPct >= 0 ? model.growth_weight_up : model.growth_weight_down;
-  const growthMult = 1 + (growthPct / 100) * weight;
+  // Bounded: the TVL already records the week's move, so the momentum term adjusts the
+  // value that remains — it never erases it and never chases a one-week spike.
+  const growthMult = Math.min(model.growth_mult_cap, Math.max(model.growth_mult_floor, 1 + (growthPct / 100) * weight));
   const ageForModel = age ?? model.unknown_age_days;
   const cappedAge = Math.min(Math.max(ageForModel, 0), model.maturity_days);
   const maturityMult = model.maturity_floor + (Math.log(1 + cappedAge) / Math.log(1 + model.maturity_days)) * model.maturity_range;
@@ -346,6 +358,7 @@ type CatKey = 'main' | 'second' | 'weekly' | 'exit';
 interface CatActions {
   keys: string[];
   exact?: string;
+  reward?: string;
   main?: string;
   second?: string;
   weekly?: string;
@@ -356,100 +369,121 @@ const LOG_LINE = 'and write the wallet, the dates and every transaction in a far
 
 const CATS: CatActions[] = [
   { keys: ['lend', 'cdp', 'collateral'],
+    reward: 'supply and borrow points',
     main: "Supply $${capital} of USDC to ${name} through ${app} and keep the position open.",
     second: "Borrow $${small} against the supply on ${app}, then repay it the same week.",
     weekly: "Top up the supply by $${small} on ${app} each week so the position keeps growing.",
     exit: "To exit, repay the borrow first, then withdraw the supply — in that order — ${log}" },
   { keys: ['dex', 'yield', 'leveraged farm', 'farm'],
+    reward: 'pool fees and points',
     main: "Provide $${capital} of liquidity to ${name}'s main pool through ${app} and keep the position open.",
     second: "Swap $${small} through ${name}'s main pool on ${app}.",
     weekly: "Collect the pool fees on ${app} each week and add them back to the position.",
     exit: "To exit, claim the pool fees first, then remove the liquidity, ${log}" },
   { keys: ['bridge'],
+    reward: 'bridge points',
     main: "Bridge $${capital} of USDC to ${chain} through ${app}, then use the bridged funds in the app.",
     second: "Bridge a second, smaller amount back through ${app} so the route is used both ways.",
     weekly: "Bridge $${small} through ${app} each week, alternating direction so the route stays active.",
     exit: "To exit, bridge the funds back to the chain you started on, ${log}" },
   { keys: ['staking', 'restak'],
+    reward: 'staking rewards and points',
     main: "Stake $${capital} of the chain's staking asset through ${app} and keep the receipt token.",
     second: "Claim or restake the staking rewards on ${app} once they appear.",
     weekly: "Claim or restake the staking rewards on ${app} once a week.",
     exit: "To exit, claim the staking rewards first, then unstake, ${log}" },
   { keys: ['perpetual', 'derivative', 'options'],
+    reward: 'trading points',
     main: "Deposit $${capital} of USDC as margin on ${name} through ${app} and open one small hedged trade.",
     second: "Close the first trade on ${app} and open a second one half its size.",
     weekly: "Open and close one small hedged trade a week on ${app}.",
     exit: "To exit, close every open trade first, then withdraw the margin, ${log}" },
   { keys: ['prediction'],
+    reward: 'market points',
     main: "Fund $${capital} on ${name} through ${app} and place one market position.",
     second: "Settle the first market on ${app} and place a second, smaller position.",
     weekly: "Place one small market position a week on ${app}.",
     exit: "To exit, settle or close every open market position, then withdraw, ${log}" },
   { keys: ['curator', 'allocator', 'risk'],
+    reward: 'vault yield and points',
     main: "Deposit $${capital} into a ${name} vault through ${app} and keep the vault shares.",
     second: "Move $${small} between two ${name} vaults on ${app}.",
     weekly: "Claim the vault yield on ${app} each week and redeposit it into the same vault.",
     exit: "To exit, claim the vault yield first, then withdraw from the vault, ${log}" },
   { keys: ['stable'],
+    reward: 'stability points',
     main: "Mint or deposit $${capital} of the stable asset through ${app}.",
     second: "Redeem a small part of the stable position on ${app}, then deposit it back.",
     weekly: "Top up the stable position by $${small} on ${app} each week.",
     exit: "To exit, redeem the stable position back to USDC, ${log}" },
   { keys: ['rwa'],
+    reward: 'yield and points',
     main: "Mint $${capital} of ${name}'s yield asset through ${app} and hold it.",
     second: "Claim the yield the asset paid on ${app} and reinvest it in the same asset.",
     weekly: "Top up the position by $${small} on ${app} each week so the holding keeps growing.",
     exit: "To exit, redeem the yield asset on ${app}, ${log}" },
   { keys: ['insurance'],
+    reward: 'cover points',
     main: "Buy $${capital} of cover from ${name} through ${app} and keep the policy.",
     second: "File a test claim for a covered event on ${app} and follow it to a decision.",
     weekly: "Renew or top up the cover on ${app} each week while the policy runs.",
     exit: "To exit, let the cover lapse or cancel the policy, ${log}" },
   { keys: ['chain'],
+    reward: 'activity points',
     main: "Use $${capital} of the chain's gas token in ${name}'s own app on ${chain} and keep the activity going.",
     weekly: "Make one small transaction in ${name}'s own app on ${chain} each week." },
   { keys: ['payment'],
+    reward: 'spending points',
     main: "Spend $${capital} through ${name}'s payments app on ${chain} and keep the card or account active.",
     weekly: "Spend $${small} through ${name}'s payments app on ${chain} each week." },
   { keys: ['privacy'],
+    reward: 'shielded points',
     main: "Use $${capital} through ${name}'s private app on ${chain} and keep the shielded balance.",
     weekly: "Refresh the shielded balance through ${name}'s private app on ${chain} each week." },
   { keys: ['basis'],
+    reward: 'funding-rate points',
     main: "Open a $${capital} basis trade on ${name} through ${app}: buy spot and short the same amount on the perpetual, and keep both legs open.",
     second: "Rebalance the two legs on ${app} when the funding rate flips against the trade.",
     weekly: "Check the funding rate on ${app} each week and rebalance the legs when it flips.",
     exit: "To exit, close the short leg first, then sell the spot leg, ${log}" },
   { keys: ['liquidity manager'],
+    reward: 'vault fees and points',
     main: "Deposit $${capital} into a ${name} managed vault through ${app} and let it rebalance the range for you.",
     second: "Claim the rebalancing fees ${name} earned on ${app}.",
     weekly: "Claim the vault fees on ${app} each week and add them back to the position.",
     exit: "To exit, claim the vault fees first, then withdraw from the managed vault, ${log}" },
   { keys: ['governance'],
+    reward: 'voting points',
     main: "Lock or delegate $${capital} of voting power through ${app} and vote on the proposals that are open.",
     second: "Vote on a second proposal on ${app} once it opens.",
     weekly: "Vote on each new proposal on ${app} every week while the position is locked.",
     exit: "To exit, unlock the voting power after the vote closes, ${log}" },
   { keys: ['btc'],
+    reward: 'BTC receipt points',
     main: "Deposit $${capital} of BTC through ${app} and hold the receipt token it issues.",
     second: "Move a small amount of the receipt token on ${app} so the position is used, not just held.",
     weekly: "Top up the BTC deposit by $${small} on ${app} each week so the position keeps growing.",
     exit: "To exit, redeem the receipt token for BTC on ${app}, ${log}" },
   { keys: ['cedefi'],
+    reward: 'vault yield and points',
     main: "Deposit $${capital} into ${name}'s CeDeFi vault through ${app} and keep the position open.",
     second: "Claim the vault yield ${name} paid on ${app}.",
     weekly: "Claim the vault yield on ${app} each week and redeposit it into the same vault.",
     exit: "To exit, withdraw from the CeDeFi vault on ${app}, ${log}" },
   { keys: ['otc'],
+    reward: 'OTC points',
     main: "Fill a $${capital} OTC order on ${name} through ${app} and settle it on-chain.",
     second: "Fill a second, smaller OTC order on ${app}.",
     weekly: "Place one small OTC order a week on ${app}.",
     exit: "To exit, cancel any open OTC orders on ${app}, then withdraw, ${log}" },
   { keys: ['card'],
+    reward: 'spending points',
     main: "Load $${capital} onto the ${name} card through ${app} and spend it so the account stays active.",
     second: "Spend a small amount through the card on ${app}.",
     weekly: "Spend $${small} through the ${name} card on ${chain} each week.",
     exit: "To exit, spend down or withdraw the card balance on ${app}, ${log}" },
   { keys: ['cex'], exact: 'centralized exchange',
+    reward: 'trading points',
     main: "Open an account with ${name} through its own app and deposit $${capital} to trade.",
     second: "Place a second, smaller trade on ${app}.",
     weekly: "Make one small trade a week on ${app}.",
@@ -487,6 +521,29 @@ function catTemplate(c: string, key: CatKey): string {
   return DEFAULT_CAT[key];
 }
 
+/** The category's reward noun for the points-page step: the first table entry that
+ *  matches the category (exact name included, as the main writer does) and names a
+ *  reward, else 'points'. The step then says which reward to claim, not just 'points'. */
+function rewardFor(c: string): string {
+  for (const e of CATS) {
+    if (e.exact === c || e.keys.some((k) => c.includes(k))) {
+      if (e.reward !== undefined) return e.reward;
+    }
+  }
+  return 'points';
+}
+
+/** How much of the chain's gas token one farm wallet needs to start, in that token. */
+function gasTokenFor(chain: string): string {
+  const c = chain.toLowerCase();
+  if (c === 'ethereum') return '0.02 ETH';
+  if (c === 'solana') return '0.05 SOL';
+  if (c === 'bitcoin') return '0.0002 BTC';
+  if (c === 'tron') return '50 TRX';
+  if (c === 'bsc' || c === 'binance') return '0.01 BNB';
+  return "a little of the chain's gas token";
+}
+
 /** The category's first action, in the words a farmer can follow, naming the protocol's own app. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   return fill(catTemplate((p.category ?? '').toLowerCase(), 'main'), p, capital, chain);
@@ -518,16 +575,22 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * weekly step names the category's own qualifying action (see weeklyActionFor), so the plan
  * tells the reader exactly which interaction to repeat — not a generic list of options.
  * The exit step names the category's own unwind order too (see exitActionFor), so the
- * last step is specific to the positions the plan opened.
+ * last step is specific to the positions the plan opened. The first step funds the fresh
+ * wallet with the chain's own gas token, the hold step budgets the whole plan's gas
+ * (setup + weekly + unwind), and the rewards step names the category's own reward
+ * (see rewardFor), so every step carries a number the reader can check, not a slogan.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const gas = gasFor(chain);
   const hold = holdDaysFor(age);
+  const weeks = Math.max(1, Math.round(hold / 7));
+  const totalGas = gas * (2 + weeks);
+  const reward = rewardFor((p.category ?? '').toLowerCase());
   return [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
+      text: `Use a fresh wallet on ${chain} that holds only the funds you plan to farm, fund it with about ${gasTokenFor(chain)} for gas, and keep its seed phrase offline.`,
       cost: `under $${gas + 2} of gas for the first transaction on ${chain}`,
       time: '5 minutes',
     },
@@ -548,11 +611,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     },
     {
       text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position`,
+      cost: `the $${capital} stays in the position; budget about $${totalGas} of gas for the whole plan on ${chain} — about $${gas} to set up, $${gas} a week for ${weeks} weeks, $${gas} to unwind`,
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open ${p.name}'s own points or rewards page in its app on ${chain} and claim only from the link it publishes.`,
+      text: `Before you withdraw, open ${p.name}'s own rewards page in its app on ${chain} and claim the ${reward} only from the link it publishes.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
@@ -582,7 +645,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 }
 
 /** A board row's compact form for data.js, with the farm plan as board.json has it. */
-export function radarRow(row: BoardRow): RadarRow {
+export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
   return {
     rank: row.rank,
     slug: row.slug,
@@ -598,6 +661,7 @@ export function radarRow(row: BoardRow): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     tier: row.tier,
+    watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
   };
 }
@@ -618,7 +682,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     launch_size: launch,
     copy_size: board.length - launch,
     live_size: live.length,
-    rows: board.map(radarRow),
+    rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist))),
     live,
   };
   return { board, radar };

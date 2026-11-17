@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, filters, sort, and a per-protocol detail view with
 // the model's own inputs and the protocol's farm plan. No network: every byte it shows is
 // in data.js. The value model, in one function — the page recomputes a row from the snapshot
@@ -6,18 +6,21 @@
 // are visibly the same arithmetic:
 //
 //   implied = round( tvl_usd x 0.30
-//                  x (1 + clamp(change_7d, -80, 200) / 100 x (growth >= 0 ? 0.8 : 1.2))
+//                  x min(1.6, max(0.5, 1 + clamp(change_7d, -80, 200) / 100 x (growth >= 0 ? 0.8 : 1.2)))
 //                  x (0.6 + 0.4 x ln(1 + min(age_days, 1095)) / ln(1 + 1095)) )
 //
-// A copy's value is the same formula at a 2% weight, rescaled so the largest copy stays
-// below the smallest launch. No protocol name is special-cased anywhere in this file.
+// The growth term is bounded because the TVL already records the week's move: one bad week
+// never erases more than half the value that remains, one good week never adds more than 60%
+// on top of a TVL that already includes the spike. A copy's value is the same formula at a
+// 2% weight, rescaled so the largest copy stays below the smallest launch. No protocol name
+// is special-cased anywhere in this file.
 (function () {
   'use strict';
 
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', growth: 'all', tab: 'launch', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', growth: 'all', tab: 'launch', sort: 'implied', dir: -1, selected: null, watchlistOnly: false };
   var MODEL = DATA.model;
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -38,19 +41,26 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
   // The model in one function: TVL, seven-day growth and age with no token, nothing else.
+  // The growth term is bounded: the TVL already records the week's move, so one week of
+  // momentum never erases more than half the value that remains or adds more than 60%.
   function impliedOf(row) {
     var growth = Math.min(MODEL.growth_cap, Math.max(MODEL.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var weight = growth >= 0 ? MODEL.growth_weight_up : MODEL.growth_weight_down;
-    var growthMult = 1 + (growth / 100) * weight;
+    var growthMult = Math.min(MODEL.growth_mult_cap, Math.max(MODEL.growth_mult_floor, 1 + (growth / 100) * weight));
     var age = row.age_days === null || row.age_days === undefined ? MODEL.unknown_age_days : row.age_days;
     var maturity = MODEL.maturity_floor + (Math.log(1 + Math.min(Math.max(age, 0), MODEL.maturity_days)) / Math.log(1 + MODEL.maturity_days)) * MODEL.maturity_range;
     var value = Math.max(1, Math.round(row.tvl_usd * MODEL.base_multiple * growthMult * maturity));
     return { value: value, growthMult: growthMult, maturity: maturity, copy: row.tier === 'copy' };
   }
-  // Why this row ranks where it does, in one line a reader can check.
+  // Why this row ranks where it does, in one line a reader can check: the TVL, the week's
+  // move with the multiplier it earned, and the age with the maturity it earned. A copy
+  // shows its 2% weight instead: its multipliers are the pre-rescale ones, so they are
+  // not the number the board carries for it.
   function reasonFor(row) {
     var parts = [fmtUsd(row.tvl_usd) + ' TVL', fmtPct(row.change_7d) + ' in 7d', fmtAge(row.age_days) + ' with no token'];
-    if (row.tier === 'copy') parts.push('wrapped, staked or bridged copy');
+    if (row.tier === 'copy') { parts.push('wrapped, staked or bridged copy'); return parts.join(' · '); }
+    if (row.growth_multiplier !== undefined) parts[1] += ' (×' + row.growth_multiplier.toFixed(2) + ')';
+    if (row.maturity_multiplier !== undefined) parts[2] += ' (×' + row.maturity_multiplier.toFixed(2) + ')';
     return parts.join(' · ');
   }
 
@@ -81,6 +91,7 @@
       var v = params.get(pair[0]);
       if (v) state[pair[1]] = v;
     });
+    if (params.get('w') === '1') state.watchlistOnly = true;
   }
   function writeHash() {
     var params = new URLSearchParams();
@@ -90,6 +101,7 @@
     set('chain', state.chain, 'all');
     set('growth', state.growth, 'all');
     set('tab', state.tab, 'launch');
+    set('w', state.watchlistOnly ? '1' : '');
     set('p', state.selected);
     var next = params.toString();
     window.history.replaceState(null, '', next ? '#' + next : window.location.pathname + window.location.search);
@@ -102,6 +114,9 @@
   function filteredRows() {
     var q = state.q.trim().toLowerCase();
     return baseRows().filter(function (r) {
+      // The watchlist toggle applies to the board tabs only: live-token rows carry no
+      // watchlist flag, and the live tab is the market's own list, not the radar's.
+      if (state.watchlistOnly && state.tab !== 'live' && !r.watchlist) return false;
       if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
       if (state.chain !== 'all' && !(r.chains || []).some(function (c) { return c === state.chain; })) return false;
       if (state.growth === 'up' && !(r.change_7d !== null && r.change_7d >= 0)) return false;
@@ -176,11 +191,17 @@
     var shown = filteredRows().length;
     var total = state.tab === 'live' ? DATA.live.length : baseRows().length;
     var tabLabel = state.tab === 'live' ? 'live-token protocols' : state.tab === 'copy' ? 'copies' : 'launches';
+    // The watchlist toggle: the 40 watchlist protocols alone, so a reader can check the
+    // floor the board promises without the 302 other rows in the way.
+    var wlBox = el('input', { type: 'checkbox', id: 'watchlist-only', 'aria-label': 'Watchlist only' });
+    wlBox.checked = state.watchlistOnly;
+    wlBox.addEventListener('change', function () { state.watchlistOnly = wlBox.checked; writeHash(); render(); });
     return el('div', { class: 'controls' },
       el('div', { class: 'field grow' }, el('label', { for: 'q', text: 'Search' }), search),
       selectField('category', 'Category', [['all', 'All categories']].concat(categories.map(function (c) { return [c, c]; })), state.category, function (v) { state.category = v; }),
       selectField('chain', 'Chain', [['all', 'All chains']].concat(chains.map(function (c) { return [c, c]; })), state.chain, function (v) { state.chain = v; }),
       selectField('growth', '7d growth', [['all', 'Any 7d growth'], ['up', 'Growing (7d ≥ 0%)'], ['down', 'Shrinking (7d < 0%)']], state.growth, function (v) { state.growth = v; }),
+      el('label', { class: 'check', for: 'watchlist-only' }, wlBox, ' Watchlist only (' + DATA.watchlist_size + ')'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Board' }),
         el('div', { class: 'tabs' }, tabBtn('launch', 'Launches (' + DATA.launch_size + ')'), tabBtn('copy', 'Copies (' + DATA.copy_size + ')'), tabBtn('live', 'Live token (' + DATA.live_size + ')'))),
       el('span', { class: 'count', text: shown + ' of ' + total + ' ' + tabLabel + ' shown' })
@@ -299,11 +320,11 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { text: 'Every row is scored by one function of the snapshot figures — TVL, seven-day growth and age with no token. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd × ' + m.base_multiple + ' × (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 × ' + m.growth_weight_up + ' up / ' + m.growth_weight_down + ' down) × (' + m.maturity_floor + ' + ' + m.maturity_range + ' × ln(1 + min(age_days, ' + m.maturity_days + ')) / ln(1 + ' + m.maturity_days + ')) )'
+        'implied = round( tvl_usd × ' + m.base_multiple + ' × min(' + m.growth_mult_cap + ', max(' + m.growth_mult_floor + ', 1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 × ' + m.growth_weight_up + ' up / ' + m.growth_weight_down + ' down)) × (' + m.maturity_floor + ' + ' + m.maturity_range + ' × ln(1 + min(age_days, ' + m.maturity_days + ')) / ln(1 + ' + m.maturity_days + ')) )'
       ),
       el('div', { class: 'keys' },
         el('div', { class: 'key' }, el('b', { text: 'TVL × ' + m.base_multiple }), el('span', { text: 'A launch is worth a share of the value already locked in the protocol.' })),
-        el('div', { class: 'key' }, el('b', { text: 'Growth, asymmetric' }), el('span', { text: 'Rising TVL lifts value at 0.8×; falling TVL cuts it at 1.2×. Clamped to −80%…+200%.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Growth, bounded' }), el('span', { text: 'Rising TVL lifts value at 0.8×; falling TVL cuts it at 1.2×. Clamped to −80%…+200%, and the multiplier itself never falls below 0.5× or rises above 1.6×: the TVL already records the week\u2019s move, so one week never erases or triples a value.' })),
         el('div', { class: 'key' }, el('b', { text: 'Age, logarithmic' }), el('span', { text: 'Longer with no token means more pent-up value, rising fast then levelling off. Unknown age counts as 365 days.' })),
         el('div', { class: 'key' }, el('b', { text: 'Copies at 2%' }), el('span', { text: 'Wrapped, staked and bridged copies use the same formula at a 2% weight, rescaled below the smallest launch.' }))
       ),
@@ -323,6 +344,13 @@
     var check = impliedOf(row);
     var matches = check.value === row.implied_value_usd || (row.tier === 'copy');
     var steps = row.farm_steps || [];
+    // Where this row sits against its own tier: how far ahead of the next row it is, so
+    // the reader sees whether the rank is a clear lead or a near-tie.
+    var peers = DATA.rows.filter(function (r) { return r.tier === row.tier; });
+    var next = peers[peers.indexOf(row) + 1];
+    var context = next
+      ? fmtUsd(row.implied_value_usd - next.implied_value_usd) + ' ahead of rank ' + next.rank + ' (' + next.name + ').'
+      : 'The smallest ' + (row.tier === 'copy' ? 'copy' : 'launch') + ' on the board.';
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'kicker', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (row.tier === 'copy' ? ' · wrapped / staked copy' : ' · pre-token launch') }),
@@ -331,6 +359,7 @@
       ),
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
     ));
+    dialog.appendChild(el('p', { class: 'rank-context', text: context }));
     var modelSection = el('section', { class: 'detail-section' },
       el('h3', { text: 'Implied value — the model, shown working' }),
       el('div', { class: 'equation' },
