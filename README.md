@@ -93,6 +93,18 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   than under the exponent alone), and its
   factual watch-outs in the detail view: one chain only, shrinking TVL,
   listed under 90 days ago, no listing date on record.
+- **In-category rank, the peer comparison** — every row also carries its rank
+  among the launches or copies that share its category, by implied value: the
+  board's In category column, sortable so every category's leader comes first
+  (33 leaders on the launch tab, 15 on the copy tab), and the detail view states
+  it next to the global rank ("In Risk Curators, it ranks #1 of 34 launches by
+  implied value"). The value curve is a within-sector comparables curve — a
+  category's own live protocols set its factor — so the peer rank is the
+  comparison the model itself is built on, not a second ranking. A row alone in
+  its category (17 of the 342) says so instead of wearing a #1. The peer rank
+  is computed from the snapshot on every run, never hand-set; 325 of the 342
+  rows have peers. It is a display of where the row stands among its
+  comparables — it does not change the value, the rank, or the verdict.
 - **Likely range** — every row carries a middle-half range for its implied
   value: the 25th to 75th percentile of market-cap / curve among the live
   protocols (0.27×–3.64×). Wide on purpose — market caps scatter widely at any
@@ -179,7 +191,9 @@ runs write identical bytes.
   and checks it against board.json; watchlist rows wear a ★ badge, the count line
   shows the filtered set's median, total and farm-verdict counts, the Farm net
   column sorts the board by dollars per hour of hands-on work, the Floor net
-  column sorts it by the farm's net at the low end of the likely range, and the Live tab shows each live
+  column sorts it by the farm's net at the low end of the likely range, the In
+  category column shows each row's rank among the launches or copies that share
+  its category (sortable, leaders first), and the Live tab shows each live
   protocol's market-cap/TVL ratio).
 - `screenshots/` — 1-board.png, 2-detail.png, 3-filtered.png.
 - `LICENSE` — MIT.

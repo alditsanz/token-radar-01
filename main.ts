@@ -10,7 +10,8 @@
 // code agree. The board also carries each row's farm verdict (Farm / Thin / Skip, netted in
 // dollars per hour of hands-on work), its middle-half value range, its rank at size
 // exponents 0.45 and 0.55, its own median rank move across 1,000 bootstrap resamples,
-// its factual watch-outs, and the bootstrap stability of the whole ranking, so the
+// its rank among its own category's rows in the same tier, its factual watch-outs, and
+// the bootstrap stability of the whole ranking, so the
 // dashboard can show how solid each rank is and where the ranking moves.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
 

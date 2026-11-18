@@ -30,7 +30,9 @@
 // plan's gas against the position's pro-rata share of its implied value, in dollars per
 // hour of hands-on work, a middle-half range for its implied value (0.27x-3.64x the
 // curve), its rank at size exponents 0.45 and 0.55, its own median rank move across
-// 1,000 resamples of the live set, and its factual watch-outs. No protocol name is special-cased anywhere in this file.
+// 1,000 resamples of the live set, its rank among its own category's rows in the same
+// tier — the peer comparison the value curve is fitted on — and its factual watch-outs.
+// No protocol name is special-cased anywhere in this file.
 (function () {
   'use strict';
 
@@ -211,6 +213,15 @@
       var b = r.rank_at_055 === undefined ? r.rank : r.rank_at_055;
       return -Math.max(Math.abs(r.rank - a), Math.abs(r.rank - b));
     },
+    // In-category rank: where the row stands among the launches (or copies) that
+    // share its category, by implied value. Negated, so the default direction
+    // (largest first) shows every category's leader first — the "best in each
+    // category" view. The value curve is a within-sector comparables curve, so
+    // the peer rank is the comparison the model itself is built on. Live rows
+    // carry no peer rank, so they sort last.
+    catrank: function (r) {
+      return (r.category_rank === undefined || r.category_rank === 0) ? -Infinity : -r.category_rank;
+    },
     implied: function (r) { return r.implied_value_usd === undefined ? (r.mcap_usd || 0) : r.implied_value_usd; }
   };
   function sortedRows(list) {
@@ -364,6 +375,7 @@
           el('div', { class: 'bar' + (r.tier === 'copy' ? ' copy' : ''), 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
+        el('td', { class: 'num', title: 'Rank among the ' + (r.category_size || 0) + ' ' + (r.tier === 'copy' ? 'copies' : 'launches') + ' in ' + (r.category || 'Other') + ', by implied value — the peer comparison the value curve is fitted on', text: '#' + r.category_rank + ' of ' + r.category_size }),
         el('td', { class: 'num', title: 'Farm net ' + ((r.farm_net_usd || 0) >= 0 ? '+$' : '−$') + Math.abs(r.farm_net_usd || 0).toLocaleString('en-US') + ' after gas' },
           el('span', { class: 'verdict v-' + (r.farm_verdict || 'Skip').toLowerCase(), text: r.farm_verdict || 'Skip' }),
           ' ' + fmtPerHour(r.farm_per_hour_usd)
@@ -389,6 +401,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('catrank', 'In category'),
             sortHeader('farm', 'Farm net'),
             sortHeader('floor', 'Floor net'),
             sortHeader('stable', 'Stability'),
@@ -519,6 +532,7 @@
         el('div', { class: 'key' }, el('b', { text: 'Growth, bounded' }), el('span', { text: 'Rising TVL lifts value at 0.8×; falling TVL cuts it at 1.2×. Clamped to −80%…+200%, and the multiplier itself never falls below 0.5× or rises above 1.6×: the TVL already records the week\u2019s move, so one week never erases or triples a value.' })),
         el('div', { class: 'key' }, el('b', { text: 'Age, logarithmic' }), el('span', { text: 'Longer with no token means more pent-up value, rising fast then levelling off. Unknown age counts as 365 days.' })),
         el('div', { class: 'key' }, el('b', { text: 'Category, fitted small' }), el('span', { text: 'A category pays a little more or less than the size curve alone says — Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19× — fitted from the live protocols of that category, shrunk toward 1 and never beyond 0.80–1.25×.' })),
+        el('div', { class: 'key' }, el('b', { text: 'In-category rank, the peer comparison' }), el('span', { text: 'Every row also carries its rank among the launches or copies that share its category, by implied value — the In category column, sortable so every category\u2019s leader comes first. The curve is a within-sector comparables curve, so the peer rank is the comparison the model itself is built on, not a second ranking.' })),
         el('div', { class: 'key' }, el('b', { text: 'Likely range, from the live scatter' }), el('span', { text: 'Every row\u2019s implied value carries a middle-half range: the 25th to 75th percentile of market-cap / curve among the live protocols (' + (m.interval ? '×' + m.interval.lo + '–×' + m.interval.hi : 'see the detail view') + '). Wide on purpose — market caps scatter widely at any TVL — and shown on each protocol\u2019s detail view.' })),
         el('div', { class: 'key' }, el('b', { text: 'Farm verdict, netted in dollars' }), el('span', { text: 'Every row is Farm, Thin or Skip: the plan\u2019s whole gas bill netted against the position\u2019s pro-rata share of its implied value. Farm means at least $20 stays after gas at $5 or more an hour of hands-on work; Thin means something stays; Skip means the gas costs more than the share. Pro-rata is a yardstick for ranking farms, never a promise of what one pays.' })),
         el('div', { class: 'key' }, el('b', { text: 'Rank stability, resampled' }), el('span', { text: 'Every row shows its rank at exponents 0.45 and 0.55, and the board sorts by Stability to show the steadiest ranks first. Resampling the live set 1,000 times keeps ranks 1–3 exact every time — and shows the middle of the board moves, so the resampling note below is part of the model, not a footnote. Each protocol\u2019s detail view also shows its own median move across the 1,000 resamples, and the Resampled column sorts by it.' })),
@@ -572,6 +586,12 @@
       : 'The smallest ' + (row.tier === 'copy' ? 'copy' : 'launch') + ' on the board.';
     var byTvl = DATA.rows.slice().sort(function (a, b) { return b.tvl_usd - a.tvl_usd; });
     context += ' Its TVL ranks #' + (byTvl.indexOf(row) + 1) + ' of ' + DATA.board_size + ' on the board.';
+    // Where it stands among its own category's rows in the same tier — the peer
+    // comparison the value curve is fitted on, since the curve is a within-sector
+    // comparables curve. A row alone in its category says so instead of wearing a #1.
+    context += row.category_size > 1
+      ? ' In ' + (row.category || 'Other') + ', it ranks #' + row.category_rank + ' of ' + row.category_size + ' ' + (row.tier === 'copy' ? 'copies' : 'launches') + ' by implied value.'
+      : ' It is the only ' + (row.category || 'Other') + ' ' + (row.tier === 'copy' ? 'copy' : 'launch') + ' on the board.';
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'kicker', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (row.tier === 'copy' ? ' · wrapped / staked copy' : ' · pre-token launch') }),

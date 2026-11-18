@@ -70,7 +70,10 @@
 // every row carries its own median move across the 1,000 resamples, so the detail view
 // can say how far this rank moves; and
 // every row carries its rank at size exponents 0.45 and 0.55 plus its factual
-// watch-outs, so the detail view can say how far this rank moves and what to watch.
+// watch-outs, so the detail view can say how far this rank moves and what to watch —
+// and its rank among its own category's rows in the same tier, so the detail view
+// and the board can say where it stands against the peers the value curve is
+// fitted on, not only where it sits on the whole board.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -211,6 +214,16 @@ export interface BoardRow {
    *  the bootstrap does not refit, and until bootstrapStability has run. */
   rank_boot_med: number | null;
   rank_boot_p90: number | null;
+  /** Where this row stands among its own category's rows in the same tier:
+   *  its rank by implied value among the launches (or copies) that share its
+   *  category, and how many rows that peer group holds. The value curve is a
+   *  within-sector comparables curve — a category's own live protocols set its
+   *  factor — so the peer rank is the comparison the model itself is built on:
+   *  a reader sees whether the row leads its category or trails it, instead of
+   *  only where it sits on the whole board. Filled in by buildBoard, which
+   *  knows the whole board; until then 0, never a guess. */
+  category_rank: number;
+  category_size: number;
   /** Factual watch-outs from the snapshot's own fields (see riskFlags):
    *  'single-chain', 'shrinking-7d', 'very-young', 'age-unknown'. */
   risk_flags: string[];
@@ -253,6 +266,8 @@ export interface RadarRow {
   rank_at_055: number;
   rank_boot_med: number | null;
   rank_boot_p90: number | null;
+  category_rank: number;
+  category_size: number;
   risk_flags: string[];
   tier: Tier;
   watchlist: boolean;
@@ -664,6 +679,24 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   rows.forEach((r, i) => {
     r.rank = i + 1;
   });
+  // Each row's rank among its own category's rows in the same tier: the rows
+  // arrive in implied-value order within each tier, so a peer group's order in
+  // `rows` is its order by value, and the position in the group is the peer
+  // rank. 48 tier+category groups; 325 of the 342 rows have peers, 17 are the
+  // only row of their category in their tier.
+  const peers = new Map<string, BoardRow[]>();
+  for (const r of rows) {
+    const key = `${r.tier}|${r.category ?? ''}`;
+    const g = peers.get(key);
+    if (g !== undefined) g.push(r);
+    else peers.set(key, [r]);
+  }
+  for (const g of peers.values()) {
+    g.forEach((r, i) => {
+      r.category_rank = i + 1;
+      r.category_size = g.length;
+    });
+  }
   // Each row's rank at the neighbouring exponents, from the same ranking run
   // with only the exponent changed — the per-row half of the sensitivity
   // table, so the detail view can say how far this rank moves.
@@ -703,11 +736,14 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     // Alt-exponent ranks are filled in by buildBoard, which knows the whole
     // board; until then they are the row's own rank, never a guess. The
     // bootstrap medians are filled in by bootstrapStability, which runs after
-    // the board is built; until then they are null, never a guess.
+    // the board is built; until then they are null, never a guess. The
+    // category rank is filled in by buildBoard the same way; until then 0.
     rank_at_045: 0,
     rank_at_055: 0,
     rank_boot_med: null,
     rank_boot_p90: null,
+    category_rank: 0,
+    category_size: 0,
     risk_flags: riskFlags(p, v.age),
     model: {
       base_multiple: MODEL.base_multiple,
@@ -1246,6 +1282,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     rank_at_055: row.rank_at_055,
     rank_boot_med: row.rank_boot_med,
     rank_boot_p90: row.rank_boot_p90,
+    category_rank: row.category_rank,
+    category_size: row.category_size,
     risk_flags: row.risk_flags,
     tier: row.tier,
     watchlist: watchlist.has(row.slug),
