@@ -8,12 +8,10 @@
 // /output/dossier.json with the vendored make.fun library. The page recomputes each row's
 // implied value from the snapshot figures with the same model, so the screenshots and the
 // code agree. The board also carries each row's farm verdict (Farm / Thin / Skip, netted in
-// dollars per hour of hands-on work), its middle-half value range, and the model's blind
-// test and sensitivity table, so the dashboard can show the proof next to the ranking. The board also
-// carries each row's farm verdict (Farm / Thin / Skip, netted in dollars per hour of hands-on work),
-// its middle-half value range, its rank at size exponents 0.45 and 0.55, its factual watch-outs, and
-// the bootstrap stability of the whole ranking, so the dashboard can show how solid each rank is
-// and where the ranking moves.
+// dollars per hour of hands-on work), its middle-half value range, its rank at size
+// exponents 0.45 and 0.55, its own median rank move across 200 bootstrap resamples,
+// its factual watch-outs, and the bootstrap stability of the whole ranking, so the
+// dashboard can show how solid each rank is and where the ranking moves.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';

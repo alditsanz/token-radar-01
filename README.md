@@ -70,9 +70,12 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   generalises across the live set instead of memorising its training set. The
   fitted slopes on the two halves are 0.59 and 0.45, bracketing the 0.52 fit on
   all 128, so the square-root exponent is not an artefact of one half. The same
-  test under a second split — halving the set by a hash of the slug instead of
-  by its letters — lands at ×3.6 and ×3.5, so the proof does not rest on one
-  arbitrary way of halving the set.
+  test under a second split — halving the set by the slug's first letter
+  (before 'n' vs from 'n' on) instead of by its letters — lands at ×3.1 and
+  ×3.6, so the proof does not rest on one arbitrary way of halving the set.
+  (An earlier round halved by FNV-1a hash parity instead: measured, it is the
+  char-sum partition with the labels swapped — every one of the 128 live slugs
+  falls on the opposite side — so it proved nothing new and was replaced.)
 - **Bootstrap: how solid is the ranking?** — the 128 live protocols drawn with
   replacement 200 times, the curve and the category factors refitted each time.
   Ranks 1, 2 and 3 keep their exact rank in all 200 resamples; the typical
@@ -83,7 +86,10 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   exponent: at the ends of that interval 8 launches move 10 or more ranks at
   0.363 and 23 at 0.653 — the top of the board is solid, the middle moves.
   Every row also shows its own rank at exponents 0.45 and 0.55 (the Stability
-  column, sortable — the "what the model is most sure about" view), and its
+  column, sortable — the "what the model is most sure about" view), its own
+  median rank move across the 200 resamples in the detail view (11 launches
+  move a median of 0 places, 50 move 6 or more — the middle of the board moves
+  far more under resampling than under the exponent alone), and its
   factual watch-outs in the detail view: one chain only, shrinking TVL,
   listed under 90 days ago, no listing date on record.
 - **Likely range** — every row carries a middle-half range for its implied
@@ -114,8 +120,8 @@ on its chain — naming the protocol's other chains when it runs on more than on
 (85 of the 198 launches do) and stating the position next to the protocol's own
 TVL as a multiple, so the reader sees the exit is small next to the protocol —
 weekly activity with the number of weeks to repeat
-it, a hold of 45–90 days with the whole plan's gas budgeted (setup + weekly +
-unwind) and the all-in total stated (capital plus gas), a rewards-page check
+it, a hold of 45–90 days with the whole plan's gas budgeted (setup + the
+second action + weekly + unwind) and the all-in total stated (capital plus gas), a rewards-page check
 naming the category's own reward, and the category's own exit order. Each step
 states its cost and time, including chain-specific gas.
 
@@ -123,11 +129,11 @@ The eighth step is the verdict, netted in dollars: the plan's whole gas bill
 against the position's pro-rata share of its implied value (capital / TVL ×
 implied). **Farm** means at least $20 stays after gas at $5 or more an hour of
 hands-on work; **Thin** means something smaller stays; **Skip** means the gas
-costs more than the share. Among the 198 launches: 82 Farm, 42 Thin, 74 Skip
+costs more than the share. Among the 198 launches: 76 Farm, 41 Thin, 81 Skip
 (counts from the built board; copies are all Skip — at a 2% weight their share
 is smaller than any plan's gas). The board sorts by Farm net too, so the best
-farms per hour sit first: the top farm is Manifest Trade at about $53.16 an
-hour (rank 84 by implied value), while rank 1 nets −$62 — a $250 position is a
+farms per hour sit first: the top farm is Manifest Trade at about $52.63 an
+hour (rank 84 by implied value), while rank 1 nets −$71 — a $250 position is a
 rounding error next to a $2.76B TVL. Pro-rata is a yardstick for ranking farms,
 never a promise of what one pays: airdrops rarely pay pro-rata, and the plan
 says so in the step itself. Hands-on hours count setup (30 minutes), claiming

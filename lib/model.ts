@@ -57,13 +57,16 @@
 //
 // Three checks ride on the same snapshot, and the dashboard shows all three:
 // blindTest fits the size curve on half the live protocols and predicts the other half,
-// both ways and under a second, independent split, so the curve is proven on protocols
+// both ways and under a second, independent split — halving by the slug's first
+// letter instead of by its letters — so the curve is proven on protocols
 // it never saw; intervalFactors gives every row a middle-half range from the live
 // protocols' own scatter; and farmEconomics nets each farm plan's gas against the
 // position's pro-rata share of its implied value, so every row carries a Farm / Thin /
 // Skip verdict in dollars per hour of hands-on work. Two more ride with them:
 // bootstrapStability resamples the live set and refits the curve and the ranking, so
-// the dashboard can say how solid the top of the board is and where it moves; and
+// the dashboard can say how solid the top of the board is and where it moves — and
+// every row carries its own median move across the 200 resamples, so the detail view
+// can say how far this rank moves; and
 // every row carries its rank at size exponents 0.45 and 0.55 plus its factual
 // watch-outs, so the detail view can say how far this rank moves and what to watch.
 
@@ -111,10 +114,14 @@ export interface ModelConstants {
   /** Blind test of the size curve (see blindTest): median |log error| fitting one
    *  half of the live protocols and predicting the other, both ways, plus the
    *  in-sample figure for the same fit. Absent on the bare MODEL constant.
-   *  hash_a_to_b / hash_b_to_a are the same test under a second, independent
-   *  split — FNV-1a hash parity of the slug instead of char-sum parity — so
-   *  the proof does not rest on one arbitrary way of halving the set. */
-  blind?: { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; hash_a_to_b: number; hash_b_to_a: number };
+   *  alpha_a_to_b / alpha_b_to_a are the same test under a second, independent
+   *  split — the slug's first character, before 'n' vs from 'n' on, instead of
+   *  char-sum parity — so the proof does not rest on one arbitrary way of
+   *  halving the set. (An earlier round halved by FNV-1a hash parity instead:
+   *  measured, it is the char-sum partition with the labels swapped — every one
+   *  of the 128 live slugs falls on the opposite side — so it proved nothing new
+   *  and was replaced.) */
+  blind?: { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; alpha_a_to_b: number; alpha_b_to_a: number };
   /** Middle-half interval for one row's implied value (see intervalFactors):
    *  the 25th/75th percentiles of market-cap / curve among the live protocols.
    *  Absent on the bare MODEL constant. */
@@ -193,6 +200,12 @@ export interface BoardRow {
    *  rank moves when the one number the model chose is varied. */
   rank_at_045: number;
   rank_at_055: number;
+  /** How far this rank moves when the live set is resampled: the row's median
+   *  absolute rank move across the 200 bootstrap resamples (see
+   *  bootstrapStability), and its 90th percentile. Null on copies, whose ranks
+   *  the bootstrap does not refit, and until bootstrapStability has run. */
+  rank_boot_med: number | null;
+  rank_boot_p90: number | null;
   /** Factual watch-outs from the snapshot's own fields (see riskFlags):
    *  'single-chain', 'shrinking-7d', 'very-young', 'age-unknown'. */
   risk_flags: string[];
@@ -232,6 +245,8 @@ export interface RadarRow {
   implied_high_usd: number;
   rank_at_045: number;
   rank_at_055: number;
+  rank_boot_med: number | null;
+  rank_boot_p90: number | null;
   risk_flags: string[];
   tier: Tier;
   watchlist: boolean;
@@ -382,17 +397,6 @@ function logLogFit(rows: SnapshotProtocol[]): { slope: number; intercept: number
   return { slope, intercept: my - slope * mx };
 }
 
-/** FNV-1a hash of a string, as a 32-bit unsigned number: the second way of
- *  halving the live set, independent of the char-sum parity below. */
-function fnv1a(s: string): number {
-  let h = 0x811c9dc5;
-  for (const c of s) {
-    h ^= c.charCodeAt(0);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
 /** The blind test of the size curve: split the live protocols in half by a
  *  deterministic parity of the slug (no peeking — each half is fitted without
  *  the other), fit the log-log curve on one half and predict the other, both
@@ -401,15 +405,16 @@ function fnv1a(s: string): number {
  *  set would predict the held-out half far worse than its own half; here the
  *  held-out errors sit within ~5% of the in-sample one, so the curve
  *  generalises across the live set instead of overfitting it. The test runs
- *  under a second, independent split too — FNV-1a hash parity instead of
- *  char-sum parity — so the proof does not rest on one arbitrary way of
- *  halving the set: the two splits agree (×3.5/×3.6 one way, ×3.6/×3.5 the
- *  other, against ×3.4 in-sample), which is what makes the claim honest
- *  rather than a split that happened to flatter the curve. */
-export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; hash_a_to_b: number; hash_b_to_a: number } {
+ *  under a second, independent split too — the slug's first character, before
+ *  'n' vs from 'n' on, instead of char-sum parity (68 of the 128 live slugs
+ *  fall on the same side in both splits, so the second halving is genuinely
+ *  a different one) — so the proof does not rest on one arbitrary way of
+ *  halving the set: the two splits land at ×3.5/×3.6 one way and ×3.1/×3.6
+ *  the other, against ×3.4 in-sample. */
+export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to_b: number; fit_b_to_a: number; in_sample: number; alpha_a_to_b: number; alpha_b_to_a: number } {
   const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   const round3 = (x: number): number => Math.round(x * 1000) / 1000;
-  if (live.length < 4) return { fit_a_to_b: 0, fit_b_to_a: 0, in_sample: 0, hash_a_to_b: 0, hash_b_to_a: 0 };
+  if (live.length < 4) return { fit_a_to_b: 0, fit_b_to_a: 0, in_sample: 0, alpha_a_to_b: 0, alpha_b_to_a: 0 };
   const err = (rows: SnapshotProtocol[], f: { slope: number; intercept: number }): number =>
     median(rows.map((p) => Math.abs(Math.log(p.mcap_usd! / Math.exp(f.intercept + f.slope * Math.log(p.tvl_usd))))));
   const runSplit = (pick: (p: SnapshotProtocol) => boolean): { a_to_b: number; b_to_a: number } => {
@@ -421,13 +426,13 @@ export function blindTest(snapshot: Snapshot, model: ModelConstants): { fit_a_to
   };
   const parity = (s: string): number => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
   const slugSplit = runSplit((p) => parity(p.slug) === 0);
-  const hashSplit = runSplit((p) => fnv1a(p.slug) % 2 === 0);
+  const alphaSplit = runSplit((p) => (p.slug[0] ?? 'a') < 'n');
   return {
     fit_a_to_b: slugSplit.a_to_b,
     fit_b_to_a: slugSplit.b_to_a,
     in_sample: round3(err(live, logLogFit(live))),
-    hash_a_to_b: hashSplit.a_to_b,
-    hash_b_to_a: hashSplit.b_to_a,
+    alpha_a_to_b: alphaSplit.a_to_b,
+    alpha_b_to_a: alphaSplit.b_to_a,
   };
 }
 
@@ -511,7 +516,13 @@ export function riskFlags(p: SnapshotProtocol, age: number | null): string[] {
  *  keep their exact rank in every resample); the middle moves, and the
  *  slope's own interval is wide enough that the exponent alone can move
  *  8–23 launches by 10 or more ranks — the sensitivity table's ±0.05
- *  understates that, and this block says so. */
+ *  understates that, and this block says so. Each launch row also keeps its
+ *  own median move and 90th percentile across the 200 resamples
+ *  (rank_boot_med / rank_boot_p90 on the row), so the detail view can say how
+ *  far this rank moves — the two measures of stability, exponent sensitivity
+ *  and resampling, are independent, and they disagree in the middle of the
+ *  board: only 15 launches move 5+ ranks at exponents 0.45/0.55, but 50 move
+ *  6+ places at their bootstrap median. */
 export function bootstrapStability(
   snapshot: Snapshot,
   model: ModelConstants,
@@ -536,12 +547,15 @@ export function bootstrapStability(
     const alt = altRanks(snapshot, model, exp);
     return launches.filter((r) => Math.abs((alt.get(r.slug) ?? 0) - r.rank) >= 10).length;
   };
-  // (2) Whole ranking on 200 resamples, factors refit each time.
+  // (2) Whole ranking on 200 resamples, factors refit each time. Each launch
+  // keeps its own list of rank moves too, so its row can carry its median and
+  // 90th-percentile move — the per-row half of this block.
   const rngModel = mulberry32(20261119);
   const top20 = launches.slice(0, 20).map((r) => r.slug);
   const stay = new Map(top20.map((s) => [s, 0]));
   const top3Exact = [0, 0, 0];
   const absMoves: number[] = [];
+  const perRow = new Map(launches.map((r) => [r.slug, [] as number[]]));
   for (let i = 0; i < 200; i++) {
     const sample = Array.from({ length: live.length }, () => live[Math.floor(rngModel() * live.length)]!);
     const mm: ModelConstants = { ...model, category_factors: categoryFactors({ ...snapshot, protocols: sample }, model) };
@@ -550,7 +564,16 @@ export function bootstrapStability(
     const order = new Map(alt.map((x, j) => [x.slug, j + 1]));
     for (const s of top20) if ((order.get(s) ?? 999) <= 20) stay.set(s, (stay.get(s) ?? 0) + 1);
     for (let j = 0; j < 3; j++) if (alt[j]!.slug === launches[j]!.slug) top3Exact[j]!++;
-    for (const r of launches) absMoves.push(Math.abs((order.get(r.slug) ?? 0) - r.rank));
+    for (const r of launches) {
+      const move = Math.abs((order.get(r.slug) ?? 0) - r.rank);
+      absMoves.push(move);
+      perRow.get(r.slug)!.push(move);
+    }
+  }
+  for (const r of launches) {
+    const moves = perRow.get(r.slug)!;
+    r.rank_boot_med = median(moves);
+    r.rank_boot_p90 = quantile(moves, 0.9);
   }
   const stayRates = [...stay.values()].map((v) => Math.round((v / 200) * 100));
   return {
@@ -671,9 +694,13 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     implied_low_usd: Math.max(1, Math.round(implied * interval.lo)),
     implied_high_usd: Math.round(implied * interval.hi),
     // Alt-exponent ranks are filled in by buildBoard, which knows the whole
-    // board; until then they are the row's own rank, never a guess.
+    // board; until then they are the row's own rank, never a guess. The
+    // bootstrap medians are filled in by bootstrapStability, which runs after
+    // the board is built; until then they are null, never a guess.
     rank_at_045: 0,
     rank_at_055: 0,
+    rank_boot_med: null,
+    rank_boot_p90: null,
     risk_flags: riskFlags(p, v.age),
     model: {
       base_multiple: MODEL.base_multiple,
@@ -731,9 +758,11 @@ function holdDaysFor(age: number | null): number {
  *  position as a pro-rata share of the protocol's implied value — capital /
  *  TVL × implied — a yardstick, not a prediction: airdrops rarely pay
  *  pro-rata, so the number ranks where the plan's money works hardest, it
- *  never promises what a farm pays. The net subtracts the whole plan's gas
- *  (setup + weekly + unwind, the same total step 5 budgets); the hours are
- *  hands-on time only — 30 minutes to set up, 10 minutes to claim, 15 to
+ *  never promises what a farm pays. The net subtracts the whole plan's gas —
+ *  the farm wallet's own transactions, setup + the second action + weekly +
+ *  unwind, the same total step 5 budgets (the fresh wallet's funding transfer
+ *  is paid by the wallet that sends it, so it is not in this total); the hours
+ *  are hands-on time only — 30 minutes to set up, 10 minutes to claim, 15 to
  *  unwind, 10 minutes a week — never the hold itself, which is waiting, not
  *  work. The verdict is Farm when at least $20 stays after gas at $5 or more
  *  an hour, Thin when anything stays, Skip when the gas costs more than the
@@ -757,7 +786,12 @@ export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: 
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const weeks = Math.max(1, Math.round(hold / 7));
-  const gasTotal = gas * (2 + weeks);
+  // Every transaction the farm wallet itself makes: setup, the second action,
+  // one a week, and the unwind. Step 5 budgets exactly this total, and step 8
+  // nets against it — an earlier round counted only setup + weekly + unwind
+  // and left the second action's gas out, so 13 verdicts sat on the wrong side
+  // of their threshold (6 Farm that are Thin, 7 Thin that are Skip).
+  const gasTotal = gas * (3 + weeks);
   const hours = Math.round((0.92 + weeks / 6) * 10) / 10;
   const gross = Math.round((capital / Math.max(p.tvl_usd, 1)) * implied);
   const net = gross - gasTotal;
@@ -1003,13 +1037,17 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * The exit step names the category's own unwind order too (see exitActionFor), so the
  * last step is specific to the positions the plan opened. The first step funds the fresh
  * wallet with the chain's own gas token, the hold step budgets the whole plan's gas
- * (setup + weekly + unwind), and the rewards step names the category's own reward
+ * (setup + the second action + weekly + unwind), and the rewards step names the category's own reward
  * (see rewardFor), so every step carries a number the reader can check, not a slogan.
  * The main step also names the protocol's other chains when it runs on more than
  * one, the weekly step says how many weeks to repeat it, and the hold step states
  * the all-in total — capital plus gas — so the reader knows the whole outlay. The
  * main step also states the position next to the protocol's own TVL, as a multiple,
  * so the reader sees the exit is small next to the protocol it leaves.
+ * The hold step's gas total counts every transaction the farm wallet itself
+ * makes — setup, the second action, one a week, and the unwind — and step 8
+ * nets the verdict against exactly that total. The first step's funding
+ * transfer is paid by the wallet that sends it, so it is not in the total.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: number): FarmStep[] {
   const chain = chainOf(p);
@@ -1017,12 +1055,13 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: num
   const gas = gasFor(chain);
   const hold = holdDaysFor(age);
   const weeks = Math.max(1, Math.round(hold / 7));
-  const totalGas = gas * (2 + weeks);
+  // Same total as farmEconomics: setup + the second action + weekly + unwind.
+  const totalGas = gas * (3 + weeks);
   const reward = rewardFor((p.category ?? '').toLowerCase());
   const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet on ${chain} that holds only the funds you plan to farm, fund it with about ${gasTokenFor(chain)} for gas, and keep its seed phrase offline.`,
-      cost: `under $${gas + 2} of gas for the first transaction on ${chain}`,
+      cost: `about $${gas} of gas for the funding transfer on ${chain}, paid by the wallet that sends it, not the farm wallet`,
       time: '5 minutes',
     },
     {
@@ -1042,7 +1081,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: num
     },
     {
       text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position; budget about $${totalGas} of gas for the whole plan on ${chain} — about $${gas} to set up, $${gas} a week for ${weeks} weeks, $${gas} to unwind. All in, about $${capital + totalGas} is at work ($${capital} in the position plus about $${totalGas} of gas)`,
+      cost: `the $${capital} stays in the position; budget about $${totalGas} of gas for the whole plan on ${chain} — about $${gas} to set up, $${gas} for the second action, $${gas} a week for ${weeks} weeks, $${gas} to unwind. All in, about $${capital + totalGas} is at work ($${capital} in the position plus about $${totalGas} of gas)`,
       time: `${hold} days`,
     },
     {
@@ -1134,6 +1173,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     implied_high_usd: row.implied_high_usd,
     rank_at_045: row.rank_at_045,
     rank_at_055: row.rank_at_055,
+    rank_boot_med: row.rank_boot_med,
+    rank_boot_p90: row.rank_boot_p90,
     risk_flags: row.risk_flags,
     tier: row.tier,
     watchlist: watchlist.has(row.slug),
@@ -1169,6 +1210,10 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     const order = new Map(alt.map((x, i) => [x.slug, i + 1]));
     return board.filter((r) => r.tier === 'launch').filter((r) => Math.abs((order.get(r.slug) ?? 0) - r.rank) >= 10).length;
   };
+  // The bootstrap runs BEFORE the rows are mapped for the dashboard: it fills
+  // each launch row's own median/90th-percentile move (rank_boot_med/p90), and
+  // radarRow copies them — mapped first, they would still be null.
+  const boot = bootstrapStability(snapshot, m, board.filter((r) => r.tier === 'launch'), proto);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -1184,7 +1229,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live,
     sensitivity,
     sensitivity_rank_moves: { at_045: rankMoves(0.45), at_055: rankMoves(0.55) },
-    bootstrap: bootstrapStability(snapshot, m, board.filter((r) => r.tier === 'launch'), proto),
+    bootstrap: boot,
   };
   return { board, radar };
 }
