@@ -62,7 +62,9 @@
 // it never saw; intervalFactors gives every row a middle-half range from the live
 // protocols' own scatter; and farmEconomics nets each farm plan's gas against the
 // position's pro-rata share of its implied value, so every row carries a Farm / Thin /
-// Skip verdict in dollars per hour of hands-on work. Two more ride with them:
+// Skip verdict in dollars per hour of hands-on work — and the same net at the low end
+// of the likely range, so step 8 can say whether the verdict survives a bad draw
+// instead of resting only on the point value. Two more ride with them:
 // bootstrapStability resamples the live set and refits the curve and the ranking, so
 // the dashboard can say how solid the top of the board is and where it moves — and
 // every row carries its own median move across the 1,000 resamples, so the detail view
@@ -192,6 +194,9 @@ export interface BoardRow {
   farm_net_usd: number;
   farm_per_hour_usd: number;
   farm_verdict: 'Farm' | 'Thin' | 'Skip';
+  /** The same net at the low end of the likely range (see farmEconomics).
+   *  Null when the board was built without an interval. */
+  farm_net_floor_usd: number | null;
   /** The middle-half range for the implied value (see intervalFactors). */
   implied_low_usd: number;
   implied_high_usd: number;
@@ -241,6 +246,7 @@ export interface RadarRow {
   farm_net_usd: number;
   farm_per_hour_usd: number;
   farm_verdict: 'Farm' | 'Thin' | 'Skip';
+  farm_net_floor_usd: number | null;
   implied_low_usd: number;
   implied_high_usd: number;
   rank_at_045: number;
@@ -671,7 +677,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 }
 
 function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier, interval: { lo: number; hi: number }): BoardRow {
-  const econ = farmEconomics(p, v.age, implied);
+  const econ = farmEconomics(p, v.age, implied, interval.lo);
   return {
     rank: 0,
     slug: p.slug,
@@ -691,6 +697,7 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     farm_net_usd: econ.net_usd,
     farm_per_hour_usd: econ.net_per_hour_usd,
     farm_verdict: econ.verdict,
+    farm_net_floor_usd: econ.net_floor_usd,
     implied_low_usd: Math.max(1, Math.round(implied * interval.lo)),
     implied_high_usd: Math.round(implied * interval.hi),
     // Alt-exponent ranks are filled in by buildBoard, which knows the whole
@@ -711,7 +718,7 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
       category_multiplier: Math.round(v.catMult * 1e4) / 1e4,
       age_days: v.age,
     },
-    farm_steps: farmSteps(p, v.age, implied).map(stepText),
+    farm_steps: farmSteps(p, v.age, implied, interval.lo).map(stepText),
   };
 }
 
@@ -767,7 +774,16 @@ function holdDaysFor(age: number | null): number {
  *  work. The verdict is Farm when at least $20 stays after gas at $5 or more
  *  an hour, Thin when anything stays, Skip when the gas costs more than the
  *  pro-rata share. Copies are Skip on the arithmetic, not on a judgement:
- *  their 2% weight leaves a share smaller than any plan's gas. */
+ *  their 2% weight leaves a share smaller than any plan's gas.
+ *  The verdict rests on the point value, and the entry itself says the point
+ *  is uncertain — the likely range runs from 0.27x to 3.64x of it — so the
+ *  economics also carry the net at the range's low end (net_floor_usd): the
+ *  same gross scaled by the interval's low factor, same gas. A Farm that
+ *  still pays there has a verdict that survives a bad draw, not just a
+ *  central one; a Farm that does not says so in step 8 instead of hiding
+ *  behind the point. The floor is the 25th percentile of the live scatter,
+ *  not a worst case — one in four live protocols sits below it — and the
+ *  step-8 sentence says exactly that by naming the low-end value. */
 export interface FarmEconomics {
   capital: number;
   gas_total: number;
@@ -778,9 +794,13 @@ export interface FarmEconomics {
   net_usd: number;
   net_per_hour_usd: number;
   verdict: 'Farm' | 'Thin' | 'Skip';
+  /** The same net at the low end of the likely range (gross scaled by the
+   *  interval's low factor, same gas), to two decimals so a sub-dollar net
+   *  still reads as a number, not $0. Null when no interval was passed. */
+  net_floor_usd: number | null;
 }
 
-export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: number): FarmEconomics {
+export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: number, intervalLo?: number): FarmEconomics {
   const chain = chainOf(p);
   const gas = gasFor(chain);
   const capital = capitalFor(p);
@@ -797,7 +817,11 @@ export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: 
   const net = gross - gasTotal;
   const perHour = Math.round((net / hours) * 100) / 100;
   const verdict = net >= 20 && perHour >= 5 ? 'Farm' : net > 0 ? 'Thin' : 'Skip';
-  return { capital, gas_total: gasTotal, hold_days: hold, weeks, active_hours: hours, gross_usd: gross, net_usd: net, net_per_hour_usd: perHour, verdict };
+  // The floor net uses the unrounded gross, so a gross that rounds to the gas
+  // bill still shows its true sub-dollar loss instead of $0.
+  const grossExact = (capital / Math.max(p.tvl_usd, 1)) * implied;
+  const netFloor = intervalLo === undefined ? null : Math.round((grossExact * intervalLo - gasTotal) * 100) / 100;
+  return { capital, gas_total: gasTotal, hold_days: hold, weeks, active_hours: hours, gross_usd: gross, net_usd: net, net_per_hour_usd: perHour, verdict, net_floor_usd: netFloor };
 }
 
 /** One category's farm actions, as templates — ${name} the protocol, ${app} its own app
@@ -1061,8 +1085,13 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * makes — setup, the second action, one a week, and the unwind — and step 8
  * nets the verdict against exactly that total. The first step's funding
  * transfer is paid by the wallet that sends it, so it is not in the total.
+ * Step 8 also tests the verdict against the low end of the likely range:
+ * a Farm or Thin whose plan still pays there says so, one whose plan does
+ * not says the verdict rests on the point value instead of the floor — the
+ * floor is the 25th percentile of the live scatter, not a worst case. Skip
+ * rows carry no floor sentence: they already lose at the point value.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: number): FarmStep[] {
+export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: number, intervalLo?: number): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const gas = gasFor(chain);
@@ -1125,16 +1154,34 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: num
   // share of the implied value. It is the plan's own arithmetic, so it belongs in
   // the plan — a reader who only reads the steps still sees whether the farm pays.
   if (implied !== undefined) {
-    const e = farmEconomics(p, age, implied);
+    const e = farmEconomics(p, age, implied, intervalLo);
     const gross = `$${e.gross_usd.toLocaleString('en-US')}`;
     const gasText = `$${e.gas_total}`;
     // Small implied values print in full ($500), not as "$0K": copies sit below $2M.
     const impliedText = implied >= 1_000_000 ? tvlText(implied) : `$${implied.toLocaleString('en-US')}`;
+    // A whole-dollar net that rounds to $0 is not a $0 loss: the unrounded
+    // gross sits cents below the gas bill, so print the loss to the cent.
+    const lossText = e.net_usd === 0
+      ? `$${(e.gas_total - (e.capital / Math.max(p.tvl_usd, 1)) * implied).toFixed(2)}`
+      : `$${Math.abs(e.net_usd).toLocaleString('en-US')}`;
+    // The floor test, for Farm and Thin only: the same net at the low end of
+    // the likely range. A whole-dollar figure when it is at least a dollar,
+    // cents when it is not — the same rule as the loss above, so no verdict
+    // ever reads as paying or losing "$0".
+    let floorText = '';
+    if (intervalLo !== undefined && e.net_floor_usd !== null && e.verdict !== 'Skip') {
+      const lowValue = Math.max(1, Math.round(implied * intervalLo));
+      const lowText = lowValue >= 1_000_000 ? tvlText(lowValue) : `$${lowValue.toLocaleString('en-US')}`;
+      const fmtFloor = (x: number): string => Math.abs(x) >= 1 ? `$${Math.round(Math.abs(x)).toLocaleString('en-US')}` : `$${Math.abs(x).toFixed(2)}`;
+      floorText = e.net_floor_usd > 0
+        ? ` At the low end of the likely range (${lowText}), the same plan still nets about ${fmtFloor(e.net_floor_usd)}.`
+        : ` At the low end of the likely range (${lowText}), the same plan loses about ${fmtFloor(e.net_floor_usd)} — the verdict rests on the point value, not the floor.`;
+    }
     const verdictText = e.verdict === 'Farm'
-      ? `The verdict is Farm: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.`
+      ? `The verdict is Farm: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.${floorText}`
       : e.verdict === 'Thin'
-        ? `The verdict is Thin: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so only about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.`
-        : `The verdict is Skip: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, less than the about ${gasText} of gas for the whole plan, so the farm loses about $${Math.abs(e.net_usd).toLocaleString('en-US')} before it pays anything.`;
+        ? `The verdict is Thin: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, against about ${gasText} of gas for the whole plan, so only about $${e.net_usd.toLocaleString('en-US')} stays after gas — about $${e.net_per_hour_usd} an hour for ${e.active_hours} hours of hands-on work.${floorText}`
+        : `The verdict is Skip: a $${e.capital} position's pro-rata share of the ${impliedText} implied value is about ${gross}, less than the about ${gasText} of gas for the whole plan, so the farm loses about ${lossText} before it pays anything.`;
     steps.push({
       text: `${verdictText} Pro-rata is a yardstick, not a promise: airdrops rarely pay pro-rata, so read the verdict as where the plan's money works hardest, not as expected profit.`,
       cost: `about $${e.gas_total} of gas for the whole plan`,
@@ -1182,6 +1229,7 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     farm_net_usd: row.farm_net_usd,
     farm_per_hour_usd: row.farm_per_hour_usd,
     farm_verdict: row.farm_verdict,
+    farm_net_floor_usd: row.farm_net_floor_usd,
     implied_low_usd: row.implied_low_usd,
     implied_high_usd: row.implied_high_usd,
     rank_at_045: row.rank_at_045,

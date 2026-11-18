@@ -485,9 +485,13 @@
     // dollars, so the counts say how many farms the board thinks are worth doing.
     var launchVerdicts = DATA.rows.filter(function (r) { return r.tier === 'launch'; });    var farmCounts = { Farm: 0, Thin: 0, Skip: 0 };
     launchVerdicts.forEach(function (r) { if (r.farm_verdict) farmCounts[r.farm_verdict]++; });
+    // How many Farm verdicts survive the low end of the likely range — the
+    // floor test step 8 runs per row, counted here so the panel states it.
+    var floorHolds = 0;
+    launchVerdicts.forEach(function (r) { if (r.farm_verdict === 'Farm' && (r.farm_net_floor_usd || 0) > 0) floorHolds++; });
     var verdictBlock = el('div', { class: 'calib' },
       el('h3', { text: 'Farm verdicts: ' + farmCounts.Farm + ' Farm, ' + farmCounts.Thin + ' Thin, ' + farmCounts.Skip + ' Skip' }),
-      el('p', { text: 'Among the ' + launchVerdicts.length + ' launches, ' + farmCounts.Farm + ' farms net at least $20 after gas at $5 or more an hour, ' + farmCounts.Thin + ' net something smaller, and ' + farmCounts.Skip + ' lose money on gas before they pay anything. Every copy is Skip: at a 2% weight its pro-rata share is smaller than any plan\u2019s gas. The biggest launches are the worst farms \u2014 rank 1 nets \u2212$71 \u2014 because a $250 position is a rounding error next to a $2.76B TVL; the best farms per hour sit deep in the board, around rank 84. Sort the board by Farm net to see them first.' })
+      el('p', { text: 'Among the ' + launchVerdicts.length + ' launches, ' + farmCounts.Farm + ' farms net at least $20 after gas at $5 or more an hour, ' + farmCounts.Thin + ' net something smaller, and ' + farmCounts.Skip + ' lose money on gas before they pay anything. Every copy is Skip: at a 2% weight its pro-rata share is smaller than any plan\u2019s gas. The biggest launches are the worst farms \u2014 rank 1 nets \u2212$71 \u2014 because a $250 position is a rounding error next to a $2.76B TVL; the best farms per hour sit deep in the board, around rank 84. Sort the board by Farm net to see them first. Only ' + floorHolds + ' of the ' + farmCounts.Farm + ' Farm verdicts still pay at the low end of the likely range \u2014 the rest rest on the point value, not the floor; each Farm or Thin row\u2019s step 8 says which it is.' })
     );
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),

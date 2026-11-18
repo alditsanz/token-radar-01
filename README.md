@@ -141,7 +141,13 @@ farms per hour sit first: the top farm is Manifest Trade at about $52.63 an
 hour (rank 84 by implied value), while rank 1 nets −$71 — a $250 position is a
 rounding error next to a $2.76B TVL. Pro-rata is a yardstick for ranking farms,
 never a promise of what one pays: airdrops rarely pay pro-rata, and the plan
-says so in the step itself. Hands-on hours count setup (30 minutes), claiming
+says so in the step itself. The verdict rests on the point value, and the
+point is uncertain — the likely range runs from 0.27× to 3.64× of it — so step
+8 also tests the verdict at the range's low end: only 26 of the 76 Farm
+verdicts still pay there, and each Farm or Thin row says in its own step 8
+whether it holds or rests on the point value. The low end is the 25th
+percentile of the live scatter, not a worst case — one in four live protocols
+sits below it. Hands-on hours count setup (30 minutes), claiming
 (10), unwinding (15) and 10 minutes a week — never the hold, which is waiting,
 not work.
 
