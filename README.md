@@ -145,7 +145,11 @@ says so in the step itself. The verdict rests on the point value, and the
 point is uncertain — the likely range runs from 0.27× to 3.64× of it — so step
 8 also tests the verdict at the range's low end: only 26 of the 76 Farm
 verdicts still pay there, and each Farm or Thin row says in its own step 8
-whether it holds or rests on the point value. The low end is the 25th
+whether it holds or rests on the point value. The floor is also a sortable
+column on the board, so the 26 Farm verdicts that still pay at the low end
+sort to the top. Dollar figures never round to $0: a sub-dollar share prints
+to the cent — 144 rows hold a real share of $0.04–$0.62, not $0 (142 of them
+printed as exactly "$0" before). The low end is the 25th
 percentile of the live scatter, not a worst case — one in four live protocols
 sits below it. Hands-on hours count setup (30 minutes), claiming
 (10), unwinding (15) and 10 minutes a week — never the hold, which is waiting,
@@ -174,7 +178,8 @@ runs write identical bytes.
   view; the page recomputes every row's implied value from the snapshot figures
   and checks it against board.json; watchlist rows wear a ★ badge, the count line
   shows the filtered set's median, total and farm-verdict counts, the Farm net
-  column sorts the board by dollars per hour of hands-on work, and the Live tab shows each live
+  column sorts the board by dollars per hour of hands-on work, the Floor net
+  column sorts it by the farm's net at the low end of the likely range, and the Live tab shows each live
   protocol's market-cap/TVL ratio).
 - `screenshots/` — 1-board.png, 2-detail.png, 3-filtered.png.
 - `LICENSE` — MIT.

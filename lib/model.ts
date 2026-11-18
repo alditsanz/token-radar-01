@@ -1155,14 +1155,24 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: num
   // the plan — a reader who only reads the steps still sees whether the farm pays.
   if (implied !== undefined) {
     const e = farmEconomics(p, age, implied, intervalLo);
-    const gross = `$${e.gross_usd.toLocaleString('en-US')}`;
+    // The gross is a quantity with units, not a point to round away: 142 rows
+    // hold a real sub-dollar share ($0.04–$0.48, median $0.15) that the
+    // whole-dollar round prints as "$0" — the same defect round 8 fixed for
+    // the net, one line down. A whole-dollar figure when it is at least a
+    // dollar, cents when it is not — the same rule the floor and the loss
+    // already use, so no verdict ever reads as holding "$0". Display only:
+    // gross_usd stays the rounded value the net, the verdict and the floor
+    // are computed from, and Math.round of the exact gross equals it on
+    // every row at $1 or above, so no other row's text changes.
+    const grossExact = (e.capital / Math.max(p.tvl_usd, 1)) * implied;
+    const gross = grossExact >= 1 ? `$${Math.round(grossExact).toLocaleString('en-US')}` : `$${grossExact.toFixed(2)}`;
     const gasText = `$${e.gas_total}`;
     // Small implied values print in full ($500), not as "$0K": copies sit below $2M.
     const impliedText = implied >= 1_000_000 ? tvlText(implied) : `$${implied.toLocaleString('en-US')}`;
     // A whole-dollar net that rounds to $0 is not a $0 loss: the unrounded
     // gross sits cents below the gas bill, so print the loss to the cent.
     const lossText = e.net_usd === 0
-      ? `$${(e.gas_total - (e.capital / Math.max(p.tvl_usd, 1)) * implied).toFixed(2)}`
+      ? `$${(e.gas_total - grossExact).toFixed(2)}`
       : `$${Math.abs(e.net_usd).toLocaleString('en-US')}`;
     // The floor test, for Farm and Thin only: the same net at the low end of
     // the likely range. A whole-dollar figure when it is at least a dollar,

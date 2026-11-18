@@ -71,6 +71,15 @@
     if (v === null || v === undefined || !isFinite(v)) return 'n/a';
     return (v < 0 ? '−$' : '$') + Math.abs(v).toFixed(2) + '/h';
   }
+  // Farm net at the low end of the likely range (implied × 0.27, same gas),
+  // signed: +$21 for a farm that still pays there, −$35 for one that does
+  // not. A whole-dollar figure when it is at least a dollar, cents when it
+  // is not — the same rule step 8 uses, so no floor ever reads as "$0".
+  function fmtFloorUsd(v) {
+    if (v === null || v === undefined || !isFinite(v)) return '—';
+    var a = Math.abs(v);
+    return (v < 0 ? '−$' : '+$') + (a >= 1 ? Math.round(a).toLocaleString('en-US') : a.toFixed(2));
+  }
   // The model in one function: TVL, seven-day growth, age with no token and the
   // category factor — nothing else. Value grows with the square root of TVL: the
   // snapshot's own live protocols trade at a shrinking share of TVL as they grow.
@@ -180,6 +189,10 @@
     // ranked on — the biggest launches are the worst farms, so this order is
     // genuinely different from the implied-value order.
     farm: function (r) { return r.farm_per_hour_usd === undefined ? -Infinity : r.farm_per_hour_usd; },
+    // Floor net: the farm's net at the low end of the likely range, the
+    // round-8 floor test as a sortable column instead of a sentence buried in
+    // step 8 — the 26 Farm verdicts that still pay there sort to the top.
+    floor: function (r) { return r.farm_net_floor_usd === null || r.farm_net_floor_usd === undefined ? -Infinity : r.farm_net_floor_usd; },
     // Resampled rank: the row's own median rank move across the 1,000 bootstrap
     // resamples of the live set. Negated, so the default direction (largest
     // first) shows the steadiest ranks first — the per-row half of the
@@ -355,6 +368,7 @@
           el('span', { class: 'verdict v-' + (r.farm_verdict || 'Skip').toLowerCase(), text: r.farm_verdict || 'Skip' }),
           ' ' + fmtPerHour(r.farm_per_hour_usd)
         ),
+        el('td', { class: 'num', title: 'Farm net at the low end of the likely range (implied × 0.27, same gas): the verdict the floor test leaves standing', text: fmtFloorUsd(r.farm_net_floor_usd) }),
         el('td', { class: 'num', title: 'Rank moves at most this many places when the size exponent runs 0.45–0.55', text: '±' + move }),
         el('td', { class: 'num', title: 'Median rank move across 1,000 resamples of the live set', text: (r.rank_boot_med === null || r.rank_boot_med === undefined) ? '—' : '±' + r.rank_boot_med }),
         el('td', null, el('span', { class: 'status ' + r.tier, text: r.tier === 'copy' ? 'copy' : 'no token' }))
@@ -376,6 +390,7 @@
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
             sortHeader('farm', 'Farm net'),
+            sortHeader('floor', 'Floor net'),
             sortHeader('stable', 'Stability'),
             sortHeader('boot', 'Resampled'),
             el('th', { scope: 'col', text: 'Token' })
