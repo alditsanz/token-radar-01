@@ -77,19 +77,20 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   char-sum partition with the labels swapped — every one of the 128 live slugs
   falls on the opposite side — so it proved nothing new and was replaced.)
 - **Bootstrap: how solid is the ranking?** — the 128 live protocols drawn with
-  replacement 200 times, the curve and the category factors refitted each time.
-  Ranks 1, 2 and 3 keep their exact rank in all 200 resamples; the typical
+  replacement 1,000 times, the curve and the category factors refitted each time.
+  Ranks 1, 2 and 3 keep their exact rank in all 1,000 resamples; the typical
   top-20 launch stays in the top 20 in 100% of resamples (weakest, rank 20,
-  74%); across all 198 launches the median rank move is 3 places. The size
+  71%); across all 198 launches the median rank move is 3 places. The size
   slope itself refits at 0.524, with a 90% interval of 0.363–0.653 — the
   model's 0.50 sits inside it. But the ranking is not bulletproof to the
   exponent: at the ends of that interval 8 launches move 10 or more ranks at
   0.363 and 23 at 0.653 — the top of the board is solid, the middle moves.
   Every row also shows its own rank at exponents 0.45 and 0.55 (the Stability
   column, sortable — the "what the model is most sure about" view), its own
-  median rank move across the 200 resamples in the detail view (11 launches
-  move a median of 0 places, 50 move 6 or more — the middle of the board moves
-  far more under resampling than under the exponent alone), and its
+  median rank move across the 1,000 resamples in the detail view and in the
+  board's own sortable Resampled column (11 launches move a median of 0 places,
+  46 move 6 or more — the middle of the board moves far more under resampling
+  than under the exponent alone), and its
   factual watch-outs in the detail view: one chain only, shrinking TVL,
   listed under 90 days ago, no listing date on record.
 - **Likely range** — every row carries a middle-half range for its implied
@@ -114,7 +115,11 @@ set aside in a Live token view with their market caps — a fact, not a model.
 ## The farm plan
 
 Every row carries eight steps, derived from the protocol's own record (category,
-chains, TVL, age): a fresh wallet funded with the chain's own gas token, the
+chains, TVL, age): a fresh wallet funded with the chain's own gas token — a
+native amount where the chain's token is named (0.02 ETH, 0.05 SOL, 0.01 BNB,
+0.0002 BTC, 50 TRX), and the whole plan's gas bill in dollars everywhere else
+(135 of the 342 rows run on chains with no named amount, and "a little of the
+chain's gas token" told the reader nothing) — the
 category's main action and a second qualifying action in the protocol's own app
 on its chain — naming the protocol's other chains when it runs on more than one
 (85 of the 198 launches do) and stating the position next to the protocol's own

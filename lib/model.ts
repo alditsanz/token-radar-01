@@ -65,7 +65,7 @@
 // Skip verdict in dollars per hour of hands-on work. Two more ride with them:
 // bootstrapStability resamples the live set and refits the curve and the ranking, so
 // the dashboard can say how solid the top of the board is and where it moves — and
-// every row carries its own median move across the 200 resamples, so the detail view
+// every row carries its own median move across the 1,000 resamples, so the detail view
 // can say how far this rank moves; and
 // every row carries its rank at size exponents 0.45 and 0.55 plus its factual
 // watch-outs, so the detail view can say how far this rank moves and what to watch.
@@ -128,7 +128,7 @@ export interface ModelConstants {
   interval?: { lo: number; hi: number };
   /** Bootstrap stability of the ranking (see bootstrapStability): the size
    *  slope refitted on 1,000 resamples of the live protocols, and the ranking
-   *  refitted on 200 resamples with the category factors refit each time.
+   *  refitted on 1,000 resamples with the category factors refit each time.
    *  Absent on the bare MODEL constant. */
   bootstrap?: {
     slope_median: number; slope_lo: number; slope_hi: number;
@@ -201,7 +201,7 @@ export interface BoardRow {
   rank_at_045: number;
   rank_at_055: number;
   /** How far this rank moves when the live set is resampled: the row's median
-   *  absolute rank move across the 200 bootstrap resamples (see
+   *  absolute rank move across the 1,000 bootstrap resamples (see
    *  bootstrapStability), and its 90th percentile. Null on copies, whose ranks
    *  the bootstrap does not refit, and until bootstrapStability has run. */
   rank_boot_med: number | null;
@@ -509,7 +509,7 @@ export function riskFlags(p: SnapshotProtocol, age: number | null): string[] {
  *  of the 128 live protocols, drawn with replacement: median 0.52, 90%
  *  interval 0.36–0.65 — the model's 0.50 sits inside it, near the median —
  *  and how many launches move 10 or more ranks at each end of that interval.
- *  (2) The whole ranking refitted on 200 resamples, the category factors
+ *  (2) The whole ranking refitted on 1,000 resamples, the category factors
  *  refit from each resample: how often each top-20 launch stays in the top
  *  20, how often ranks 1–3 keep their exact rank, and the median absolute
  *  rank move across all launches. The top of the board is solid (ranks 1–3
@@ -517,7 +517,7 @@ export function riskFlags(p: SnapshotProtocol, age: number | null): string[] {
  *  slope's own interval is wide enough that the exponent alone can move
  *  8–23 launches by 10 or more ranks — the sensitivity table's ±0.05
  *  understates that, and this block says so. Each launch row also keeps its
- *  own median move and 90th percentile across the 200 resamples
+ *  own median move and 90th percentile across the 1,000 resamples
  *  (rank_boot_med / rank_boot_p90 on the row), so the detail view can say how
  *  far this rank moves — the two measures of stability, exponent sensitivity
  *  and resampling, are independent, and they disagree in the middle of the
@@ -547,7 +547,7 @@ export function bootstrapStability(
     const alt = altRanks(snapshot, model, exp);
     return launches.filter((r) => Math.abs((alt.get(r.slug) ?? 0) - r.rank) >= 10).length;
   };
-  // (2) Whole ranking on 200 resamples, factors refit each time. Each launch
+  // (2) Whole ranking on 1,000 resamples, factors refit each time. Each launch
   // keeps its own list of rank moves too, so its row can carry its median and
   // 90th-percentile move — the per-row half of this block.
   const rngModel = mulberry32(20261119);
@@ -556,7 +556,7 @@ export function bootstrapStability(
   const top3Exact = [0, 0, 0];
   const absMoves: number[] = [];
   const perRow = new Map(launches.map((r) => [r.slug, [] as number[]]));
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 1000; i++) {
     const sample = Array.from({ length: live.length }, () => live[Math.floor(rngModel() * live.length)]!);
     const mm: ModelConstants = { ...model, category_factors: categoryFactors({ ...snapshot, protocols: sample }, model) };
     const alt = launches.map((r) => ({ slug: r.slug, v: impliedValue(proto.get(r.slug)!, snapshot.as_of, mm).implied }))
@@ -575,7 +575,7 @@ export function bootstrapStability(
     r.rank_boot_med = median(moves);
     r.rank_boot_p90 = quantile(moves, 0.9);
   }
-  const stayRates = [...stay.values()].map((v) => Math.round((v / 200) * 100));
+  const stayRates = [...stay.values()].map((v) => Math.round((v / 1000) * 100));
   return {
     slope_median: slopeMedian,
     slope_lo: slopeLo,
@@ -584,7 +584,7 @@ export function bootstrapStability(
     rank_moves_hi: movesAt(slopeHi),
     top20_stay_median: median(stayRates),
     top20_stay_min: Math.min(...stayRates),
-    top3_exact: [Math.round((top3Exact[0]! / 200) * 100), Math.round((top3Exact[1]! / 200) * 100), Math.round((top3Exact[2]! / 200) * 100)],
+    top3_exact: [Math.round((top3Exact[0]! / 1000) * 100), Math.round((top3Exact[1]! / 1000) * 100), Math.round((top3Exact[2]! / 1000) * 100)],
     median_abs_move: median(absMoves),
   };
 }
@@ -803,10 +803,8 @@ export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: 
 /** One category's farm actions, as templates — ${name} the protocol, ${app} its own app
  *  on the chain, ${capital} the position size, ${small} a fifth of it, ${chain} the chain,
  *  ${log} the farm-log line. One table drives all four writers, so a category's wording
- *  lives in one place instead of four parallel if-chains. An entry that leaves a field
- *  out falls through to the default for that writer: the chain, payment and privacy
- *  categories have a main and a weekly action only, exactly as the four writers had
- *  before — their second action and exit were always the generic ones. */
+ *  lives in one place instead of four parallel if-chains. Every entry defines
+ *  all four writers. */
 type CatKey = 'main' | 'second' | 'weekly' | 'exit';
 interface CatActions {
   keys: string[];
@@ -884,15 +882,21 @@ const CATS: CatActions[] = [
   { keys: ['chain'],
     reward: 'activity points',
     main: "Use $${capital} of the chain's gas token in ${name}'s own app on ${chain} and keep the activity going.",
-    weekly: "Make one small transaction in ${name}'s own app on ${chain} each week." },
+    second: "Make a second small transaction in ${name}'s own app on ${chain} so the activity is not a single event.",
+    weekly: "Make one small transaction in ${name}'s own app on ${chain} each week.",
+    exit: "To exit, move the remaining balance out of ${name}'s own app on ${chain}, ${log}" },
   { keys: ['payment'],
     reward: 'spending points',
     main: "Spend $${capital} through ${name}'s payments app on ${chain} and keep the card or account active.",
-    weekly: "Spend $${small} through ${name}'s payments app on ${chain} each week." },
+    second: "Make a second, smaller payment through ${name}'s payments app on ${chain}.",
+    weekly: "Spend $${small} through ${name}'s payments app on ${chain} each week.",
+    exit: "To exit, withdraw the remaining balance from ${name}'s payments app on ${chain}, ${log}" },
   { keys: ['privacy'],
     reward: 'shielded points',
     main: "Use $${capital} through ${name}'s private app on ${chain} and keep the shielded balance.",
-    weekly: "Refresh the shielded balance through ${name}'s private app on ${chain} each week." },
+    second: "Make a second shielded transaction through ${name}'s private app on ${chain}.",
+    weekly: "Refresh the shielded balance through ${name}'s private app on ${chain} each week.",
+    exit: "To exit, unshield the remaining balance through ${name}'s private app on ${chain}, ${log}" },
   { keys: ['basis'],
     reward: 'funding-rate points',
     main: "Open a $${capital} basis trade on ${name} through ${app}: buy spot and short the same amount on the perpetual, and keep both legs open.",
@@ -993,15 +997,22 @@ function tvlText(tvl: number): string {
   return `$${Math.round(tvl / 1e3)}K`;
 }
 
-/** How much of the chain's gas token one farm wallet needs to start, in that token. */
-function gasTokenFor(chain: string): string {
+/** How much of the chain's gas token one farm wallet needs to start, in that token.
+ *  Six chains name a native amount (0.02 ETH, 0.05 SOL, 0.01 BNB, 0.0002 BTC,
+ *  50 TRX); every other chain states the same funding need in dollars — the
+ *  whole plan's gas bill, which step 5 budgets — because naming a native amount
+ *  for 50+ chains from memory would invent token symbols (Polygon's token alone
+ *  was renamed MATIC to POL). "About $27 worth of Base's gas token" is a number
+ *  the reader can act on; "a little of the chain's gas token" was not, and 135
+ *  of the 342 rows said exactly that before this fix. */
+function gasTokenFor(chain: string, totalGas: number): string {
   const c = chain.toLowerCase();
   if (c === 'ethereum') return '0.02 ETH';
   if (c === 'solana') return '0.05 SOL';
   if (c === 'bitcoin') return '0.0002 BTC';
   if (c === 'tron') return '50 TRX';
   if (c === 'bsc' || c === 'binance') return '0.01 BNB';
-  return "a little of the chain's gas token";
+  return `$${totalGas} worth of ${chain}'s gas token`;
 }
 
 /** The category's first action, in the words a farmer can follow, naming the protocol's own app. */
@@ -1036,7 +1047,9 @@ function exitActionFor(p: SnapshotProtocol, chain: string): string {
  * tells the reader exactly which interaction to repeat — not a generic list of options.
  * The exit step names the category's own unwind order too (see exitActionFor), so the
  * last step is specific to the positions the plan opened. The first step funds the fresh
- * wallet with the chain's own gas token, the hold step budgets the whole plan's gas
+ * wallet with the chain's own gas token — a native amount where the chain's token is
+ * named (ETH, SOL, BNB, BTC, TRX), the whole plan's gas bill in dollars everywhere else
+ * (see gasTokenFor) — the hold step budgets the whole plan's gas
  * (setup + the second action + weekly + unwind), and the rewards step names the category's own reward
  * (see rewardFor), so every step carries a number the reader can check, not a slogan.
  * The main step also names the protocol's other chains when it runs on more than
@@ -1060,7 +1073,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, implied?: num
   const reward = rewardFor((p.category ?? '').toLowerCase());
   const steps: FarmStep[] = [
     {
-      text: `Use a fresh wallet on ${chain} that holds only the funds you plan to farm, fund it with about ${gasTokenFor(chain)} for gas, and keep its seed phrase offline.`,
+      text: `Use a fresh wallet on ${chain} that holds only the funds you plan to farm, fund it with about ${gasTokenFor(chain, totalGas)} for gas, and keep its seed phrase offline.`,
       cost: `about $${gas} of gas for the funding transfer on ${chain}, paid by the wallet that sends it, not the farm wallet`,
       time: '5 minutes',
     },

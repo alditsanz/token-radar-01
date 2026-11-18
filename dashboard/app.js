@@ -20,7 +20,7 @@
 // holds up: fitted on half the live protocols it predicts the other half with a median
 // error of x3.5, and x3.6 the other way, against x3.4 in-sample — and x3.1 / x3.6
 // under a second, first-letter split, so the proof does not rest on one way of halving
-// the set. Resampled 200 times, ranks 1–3 keep their exact rank every time. The
+// the set. Resampled 1,000 times, ranks 1–3 keep their exact rank every time. The
 // growth term is bounded because the TVL already records the week's move: one week of
 // momentum never erases more than half the value that remains or adds more than 60%.
 // The category factor is fitted from the same snapshot's live protocols (at most
@@ -30,7 +30,7 @@
 // plan's gas against the position's pro-rata share of its implied value, in dollars per
 // hour of hands-on work, a middle-half range for its implied value (0.27x-3.64x the
 // curve), its rank at size exponents 0.45 and 0.55, its own median rank move across
-// 200 resamples of the live set, and its factual watch-outs. No protocol name is special-cased anywhere in this file.
+// 1,000 resamples of the live set, and its factual watch-outs. No protocol name is special-cased anywhere in this file.
 (function () {
   'use strict';
 
@@ -180,6 +180,16 @@
     // ranked on — the biggest launches are the worst farms, so this order is
     // genuinely different from the implied-value order.
     farm: function (r) { return r.farm_per_hour_usd === undefined ? -Infinity : r.farm_per_hour_usd; },
+    // Resampled rank: the row's own median rank move across the 1,000 bootstrap
+    // resamples of the live set. Negated, so the default direction (largest
+    // first) shows the steadiest ranks first — the per-row half of the
+    // resampling block, sortable in the board itself instead of buried in the
+    // detail view. Copies carry no number (their ranks are not refitted), so
+    // they sort last.
+    boot: function (r) {
+      var m = r.rank_boot_med;
+      return (m === null || m === undefined) ? -Infinity : -m;
+    },
     // Rank stability: how far the rank moves when the size exponent runs 0.45–0.55.
     // Negated, so the default direction (largest first) shows the steadiest ranks
     // first — the "what the model is most sure about" view.
@@ -346,6 +356,7 @@
           ' ' + fmtPerHour(r.farm_per_hour_usd)
         ),
         el('td', { class: 'num', title: 'Rank moves at most this many places when the size exponent runs 0.45–0.55', text: '±' + move }),
+        el('td', { class: 'num', title: 'Median rank move across 1,000 resamples of the live set', text: (r.rank_boot_med === null || r.rank_boot_med === undefined) ? '—' : '±' + r.rank_boot_med }),
         el('td', null, el('span', { class: 'status ' + r.tier, text: r.tier === 'copy' ? 'copy' : 'no token' }))
       );
       tbody.appendChild(tr);
@@ -366,6 +377,7 @@
             sortHeader('implied', 'Implied value'),
             sortHeader('farm', 'Farm net'),
             sortHeader('stable', 'Stability'),
+            sortHeader('boot', 'Resampled'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -459,15 +471,15 @@
         }))
       )
     ) : null;
-    // Bootstrap: the live set resampled 200 times, the curve and the category
+    // Bootstrap: the live set resampled 1,000 times, the curve and the category
     // factors refitted each time, rendered from the build's own numbers. The
     // top of the board is solid; the middle moves; and the slope's own 90%
     // interval is wide enough that the exponent alone can move 8–23 launches
     // by 10 or more ranks — the sensitivity table's ±0.05 understates that,
     // and this block says so instead of hiding it.
     var boot = DATA.bootstrap ? el('div', { class: 'calib' },
-      el('h3', { text: 'How solid is the ranking? Resampled 200 times' }),
-      el('p', { text: 'The 128 live protocols were drawn with replacement 200 times, and the size curve and the category factors refitted each time. Ranks 1, 2 and 3 keep their exact rank in all 200 resamples; the typical top-20 launch stays in the top 20 in ' + DATA.bootstrap.top20_stay_median + '% of resamples (weakest, rank 20, ' + DATA.bootstrap.top20_stay_min + '%); across all 198 launches the median rank move is ' + DATA.bootstrap.median_abs_move + ' places. The size slope itself refits at ' + DATA.bootstrap.slope_median + ', with a 90% interval of ' + DATA.bootstrap.slope_lo + '–' + DATA.bootstrap.slope_hi + ' \u2014 the model\u2019s 0.50 sits inside it. But the ranking is not bulletproof to the exponent: at the ends of that interval ' + DATA.bootstrap.rank_moves_lo + ' launches move 10 or more ranks at ' + DATA.bootstrap.slope_lo + ' and ' + DATA.bootstrap.rank_moves_hi + ' at ' + DATA.bootstrap.slope_hi + ' \u2014 the top of the board is solid, the middle moves.' })
+      el('h3', { text: 'How solid is the ranking? Resampled 1,000 times' }),
+      el('p', { text: 'The 128 live protocols were drawn with replacement 1,000 times, and the size curve and the category factors refitted each time. Ranks 1, 2 and 3 keep their exact rank in all 1,000 resamples; the typical top-20 launch stays in the top 20 in ' + DATA.bootstrap.top20_stay_median + '% of resamples (weakest, rank 20, ' + DATA.bootstrap.top20_stay_min + '%); across all 198 launches the median rank move is ' + DATA.bootstrap.median_abs_move + ' places. The size slope itself refits at ' + DATA.bootstrap.slope_median + ', with a 90% interval of ' + DATA.bootstrap.slope_lo + '–' + DATA.bootstrap.slope_hi + ' \u2014 the model\u2019s 0.50 sits inside it. But the ranking is not bulletproof to the exponent: at the ends of that interval ' + DATA.bootstrap.rank_moves_lo + ' launches move 10 or more ranks at ' + DATA.bootstrap.slope_lo + ' and ' + DATA.bootstrap.rank_moves_hi + ' at ' + DATA.bootstrap.slope_hi + ' \u2014 the top of the board is solid, the middle moves.' })
     ) : null;
     // Farm verdicts, counted live from the board: the verdicts are netted in
     // dollars, so the counts say how many farms the board thinks are worth doing.
@@ -490,7 +502,7 @@
         el('div', { class: 'key' }, el('b', { text: 'Category, fitted small' }), el('span', { text: 'A category pays a little more or less than the size curve alone says — Lending 0.80×, Yield 0.84×, RWA 1.14×, Basis Trading 1.19× — fitted from the live protocols of that category, shrunk toward 1 and never beyond 0.80–1.25×.' })),
         el('div', { class: 'key' }, el('b', { text: 'Likely range, from the live scatter' }), el('span', { text: 'Every row\u2019s implied value carries a middle-half range: the 25th to 75th percentile of market-cap / curve among the live protocols (' + (m.interval ? '×' + m.interval.lo + '–×' + m.interval.hi : 'see the detail view') + '). Wide on purpose — market caps scatter widely at any TVL — and shown on each protocol\u2019s detail view.' })),
         el('div', { class: 'key' }, el('b', { text: 'Farm verdict, netted in dollars' }), el('span', { text: 'Every row is Farm, Thin or Skip: the plan\u2019s whole gas bill netted against the position\u2019s pro-rata share of its implied value. Farm means at least $20 stays after gas at $5 or more an hour of hands-on work; Thin means something stays; Skip means the gas costs more than the share. Pro-rata is a yardstick for ranking farms, never a promise of what one pays.' })),
-        el('div', { class: 'key' }, el('b', { text: 'Rank stability, resampled' }), el('span', { text: 'Every row shows its rank at exponents 0.45 and 0.55, and the board sorts by Stability to show the steadiest ranks first. Resampling the live set 200 times keeps ranks 1–3 exact every time — and shows the middle of the board moves, so the resampling note below is part of the model, not a footnote. Each protocol\u2019s detail view also shows its own median move across the 200 resamples.' })),
+        el('div', { class: 'key' }, el('b', { text: 'Rank stability, resampled' }), el('span', { text: 'Every row shows its rank at exponents 0.45 and 0.55, and the board sorts by Stability to show the steadiest ranks first. Resampling the live set 1,000 times keeps ranks 1–3 exact every time — and shows the middle of the board moves, so the resampling note below is part of the model, not a footnote. Each protocol\u2019s detail view also shows its own median move across the 1,000 resamples, and the Resampled column sorts by it.' })),
         el('div', { class: 'key' }, el('b', { text: 'Copies at 2%' }), el('span', { text: 'Wrapped, staked and bridged copies use the same formula at a 2% weight, rescaled below the smallest launch.' }))
       ),
       calib,
@@ -579,9 +591,9 @@
       // is and what to check before farming it.
       el('p', { class: 'range', text: 'Rank stability: #' + (row.rank_at_045 === undefined ? row.rank : row.rank_at_045) + ' at exponent 0.45, #' + (row.rank_at_055 === undefined ? row.rank : row.rank_at_055) + ' at 0.55 \u2014 this rank moves ' + (move === 1 ? '1 place' : move + ' places') + ' at most across that range. Sort the board by Stability to see the steadiest ranks first.' }),
       // How far this rank moves when the live set itself is resampled: the
-      // row's own median move across the 200 bootstrap resamples. Launches
+      // row's own median move across the 1,000 bootstrap resamples. Launches
       // only — copies are not refitted, so they carry no number here.
-      row.rank_boot_med === null || row.rank_boot_med === undefined ? null : el('p', { class: 'range', text: 'Resampled rank: in 200 resamples of the live set this rank moved a median of ' + row.rank_boot_med + (row.rank_boot_med === 1 ? ' place' : ' places') + ' (90th percentile ' + row.rank_boot_p90 + (row.rank_boot_p90 === 1 ? ' place' : ' places') + ').' }),
+      row.rank_boot_med === null || row.rank_boot_med === undefined ? null : el('p', { class: 'range', text: 'Resampled rank: in 1,000 resamples of the live set this rank moved a median of ' + row.rank_boot_med + (row.rank_boot_med === 1 ? ' place' : ' places') + ' (90th percentile ' + row.rank_boot_p90 + (row.rank_boot_p90 === 1 ? ' place' : ' places') + ').' }),
       el('p', { class: 'range', text: watchOutsFor(row) })
     );
     if (row.tier === 'copy') {
