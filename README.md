@@ -105,6 +105,15 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   is computed from the snapshot on every run, never hand-set; 325 of the 342
   rows have peers. It is a display of where the row stands among its
   comparables — it does not change the value, the rank, or the verdict.
+- **Defaults and bounds, counted** — the model panel also counts how often
+  the snapshot is silent and how often the formula's bounds actually bind,
+  computed live from the board's own rows: 24 of the 342 rows carry no
+  listing date, so their age is scored as the 365-day default (7 of them
+  launches); 2 rows have no 7-day change on record, counted as 0%; 6 rows
+  sit on a growth bound (5 at the 1.6× cap, 1 at the 0.5× floor) and 1
+  row's raw change was clamped into the −80%…+200% band first; 34 rows are
+  at or past the 3-year maturity cap, so further age earns them nothing. A
+  default or a bound is only honest if its incidence is stated next to it.
 - **Likely range** — every row carries a middle-half range for its implied
   value: the 25th to 75th percentile of market-cap / curve among the live
   protocols (0.27×–3.64×). Wide on purpose — market caps scatter widely at any

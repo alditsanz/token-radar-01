@@ -521,6 +521,27 @@
       el('h3', { text: 'Farm verdicts: ' + farmCounts.Farm + ' Farm, ' + farmCounts.Thin + ' Thin, ' + farmCounts.Skip + ' Skip' }),
       el('p', { text: 'Among the ' + launchVerdicts.length + ' launches, ' + farmCounts.Farm + ' farms net at least $20 after gas at $5 or more an hour, ' + farmCounts.Thin + ' net something smaller, and ' + farmCounts.Skip + ' lose money on gas before they pay anything. Every copy is Skip: at a 2% weight its pro-rata share is smaller than any plan\u2019s gas. The biggest launches are the worst farms \u2014 rank 1 nets \u2212$71 \u2014 because a $250 position is a rounding error next to a $2.76B TVL; the best farms per hour sit deep in the board, around rank 84. Sort the board by Farm net to see them first. Only ' + floorHolds + ' of the ' + farmCounts.Farm + ' Farm verdicts still pay at the low end of the likely range \u2014 the rest rest on the point value, not the floor; each Farm or Thin row\u2019s step 8 says which it is.' })
     );
+    // Where the model fills gaps, counted live from the board's own rows: how
+    // often the snapshot is silent (no listing date, no 7-day change) and how
+    // often the formula's bounds actually bind (growth multiplier at its cap
+    // or floor, the raw change clamped first, age past the maturity cap). The
+    // defaults and bounds above are only honest if their incidence is stated.
+    var gapAge = 0, gapAgeLaunch = 0, gapChg = 0, gapCap = 0, gapFloor = 0, gapClamp = 0, gapMat = 0;
+    DATA.rows.forEach(function (r) {
+      if (r.age_days === null || r.age_days === undefined) { gapAge++; if (r.tier === 'launch') gapAgeLaunch++; }
+      else if (r.age_days >= m.maturity_days) gapMat++;
+      if (r.change_7d === null || r.change_7d === undefined) gapChg++;
+      else {
+        if (r.change_7d > m.growth_cap || r.change_7d < m.growth_floor) gapClamp++;
+        var gp = Math.min(m.growth_cap, Math.max(m.growth_floor, r.change_7d));
+        var graw = 1 + (gp / 100) * (gp >= 0 ? m.growth_weight_up : m.growth_weight_down);
+        if (graw > m.growth_mult_cap) gapCap++; else if (graw < m.growth_mult_floor) gapFloor++;
+      }
+    });
+    var gapsBlock = el('div', { class: 'calib' },
+      el('h3', { text: 'Where the model fills gaps: defaults and bounds, counted' }),
+      el('p', { text: 'Of the ' + DATA.rows.length + ' rows, ' + gapAge + ' carry no listing date in the snapshot, so their age is scored as the ' + m.unknown_age_days + '-day default (' + gapAgeLaunch + ' of them launches), and ' + gapChg + ' rows have no 7-day change on record, counted as 0%. The bounds bind as well: ' + (gapCap + gapFloor) + ' rows sit on a growth bound (' + gapCap + ' at the ' + m.growth_mult_cap + '\u00d7 cap, ' + gapFloor + ' at the ' + m.growth_mult_floor + '\u00d7 floor), ' + gapClamp + ' row\u2019s raw change was clamped into the ' + m.growth_floor + '%\u2026+' + m.growth_cap + '% band first, and ' + gapMat + ' rows are at or past the ' + (m.maturity_days / 365) + '-year maturity cap, so further age earns them nothing. Counted from the board\u2019s own rows; each row\u2019s detail view shows its own multipliers, so any of these can be checked row by row.' })
+    );
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { text: 'Every row is scored by one function of the snapshot figures — TVL, seven-day growth, age with no token and category. No protocol name is special-cased, and no row is hand-picked.' }),
@@ -543,6 +564,7 @@
       sens,
       boot,
       verdictBlock,
+      gapsBlock,
       el('p', { class: 'sub', text: 'Age is the time since the protocol was first listed — the best record of how long it has run with no token. The board separates protocols whose token already trades from those still to come, and says a protocol records no token, never that it has none. Growth and age were checked against the live set after the size curve and barely move market cap (r = −0.15 and −0.05), so both stay small bounded adjustments, never the driver.' })
     );
   }
