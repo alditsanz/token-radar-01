@@ -6,8 +6,11 @@
 // at the bottom — writes the ranked board to /output/board.json, the dashboard's data beside
 // the page as data.js, copies dashboard/ and screenshots/ to /output, and writes
 // /output/dossier.json with the vendored make.fun library. The page recomputes each row's
-// implied value from the snapshot figures with the same model, so the screenshots and the
-// code agree. The board also carries each row's farm verdict (Farm / Thin / Skip, netted in
+// implied value and token odds from the snapshot figures with the same model, so the
+// screenshots and the code agree. The board also carries each row's token odds — the
+// chance it ever lists,
+// fitted from the snapshot's own record — and the expected value they make with the
+// implied value, each row's farm verdict (Farm / Thin / Skip, netted in
 // dollars per hour of hands-on work), its middle-half value range, its rank at size
 // exponents 0.45 and 0.55, its own median rank move across 1,000 bootstrap resamples,
 // its rank among its own category's rows in the same tier, its factual watch-outs, and

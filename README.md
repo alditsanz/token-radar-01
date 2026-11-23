@@ -7,7 +7,10 @@
 A token launch radar: it reads a sealed DefiLlama snapshot of 758 protocols, ranks
 every protocol that records no token (342) by what its launch would be worth, and
 hands in a dashboard a reader can use — board, detail view per protocol, filters,
-and a farm plan for each one.
+and a farm plan for each one. Every row also carries the odds it ever lists a
+token, fitted from the snapshot's own record, and the expected value those odds
+make with the implied value; the dashboard's first screen accounts for all 758
+protocols in the snapshot, not just the 342 on the board.
 
 ## The model (radar-4)
 
@@ -93,6 +96,42 @@ implied = round( tvl_usd × 0.30 × (50,000,000 / tvl_usd)^0.5
   than under the exponent alone), and its
   factual watch-outs in the detail view: one chain only, shrinking TVL,
   listed under 90 days ago, no listing date on record.
+- **Token odds, from the peers' record** — every row also carries the chance it
+  ever lists a token, fitted from the same snapshot's own record: of the 758
+  protocols, 416 already have a token, and among the dated ones the share that
+  has a token rises with age — 32% in the first 90 days, 41% by one year, 55%
+  at two to three years — and levels at a plateau of 78% past three years. A
+  row's odds are the share of that plateau still ahead of it at its age,
+  (plateau − F(age)) / (1 − F(age)) on a log-age-interpolated curve, adjusted
+  by per-category odds ratios (shrunk by n/(n+20), clamped to 0.60–1.67×, only
+  where a category holds 10 or more protocols); rows with no listing date get
+  the no-date record's own odds (3%). The result runs from 0.746 for the
+  youngest rows down to the 0.02 floor past the plateau. **Expected value** —
+  implied × odds — is printed under every implied value on the board and in
+  the detail view; the board still ranks by implied value, and the farm
+  verdicts still net against it. The page recomputes each row's odds from the
+  published fit and checks them against board.json, like the value. Checked
+  like the value curve: fitted on one part of the snapshot and scored on the
+  rest by log-loss across five splits (slug parity both ways, first letter
+  both ways, older-listed fitted to newer-listed), the odds model errs at
+  0.636 against 0.720 for the snapshot-wide rate and 0.659 for the age curve
+  alone; under a category-block bootstrap (300 resamples) the improvement
+  over the base rate holds in every resample (90% interval −0.124 to −0.044).
+  A chain adjustment was fitted the same way and dropped: it helped the
+  parity splits and hurt the letter and time splits. On the time split the
+  age curve alone adds nothing — the older half carries almost no young
+  protocols to learn from — while the category ratios still help. The odds
+  fall as a protocol ages without listing while the value rises with age;
+  the two are published side by side, never netted into one number.
+- **The census: all 758, accounted for** — the dashboard's first screen states
+  the whole snapshot's accounting, counted from the snapshot at build time:
+  758 protocols = the 342 with no token on record (the board) + 416 that
+  already have a token and are set aside. Of the 416, 128 carry a market cap
+  the size curve is fitted on (the 24 largest are on the Live tab); the other
+  288 have a token on record but no usable market cap — 272 with no figure at
+  all, 15 recorded as $0 and 1 as a −$1 placeholder. (An earlier count of
+  "129 with mcap" does not survive contact with the snapshot: 144 carry a
+  figure on record, 128 of them positive and usable.)
 - **In-category rank, the peer comparison** — every row also carries its rank
   among the launches or copies that share its category, by implied value: the
   board's In category column, sortable so every category's leader comes first
@@ -196,8 +235,11 @@ runs write identical bytes.
 - `lib/model.ts` — the radar-4 model, the farm plans, the board checks.
 - `vendor/makefun-board.ts` — the kit's dossier library, unchanged.
 - `dashboard/` — `index.html`, `app.css`, `app.js` (sortable, filterable, detail
-  view; the page recomputes every row's implied value from the snapshot figures
-  and checks it against board.json; watchlist rows wear a ★ badge, the count line
+  view; the page recomputes every row's implied value and token odds from the
+  snapshot figures and checks both against board.json; the first screen carries
+  the census of all 758 protocols and a proof strip — watchlist 40/40, the blind
+  test ×3.5/×3.6, the 1,000-resample stability, the farm-verdict counts — and
+  every implied value carries its expected value beneath it; watchlist rows wear a ★ badge, the count line
   shows the filtered set's median, total and farm-verdict counts, the Farm net
   column sorts the board by dollars per hour of hands-on work, the Floor net
   column sorts it by the farm's net at the low end of the likely range, the In

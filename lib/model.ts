@@ -98,6 +98,25 @@ export interface Snapshot {
   watchlist: string[];
 }
 
+/** The token-odds fit (see tokenOddsFit): the chance a pre-token protocol
+ *  ever lists a token, read off the snapshot's own record — the share of
+ *  protocols that have a token, by age bucket, plus per-category odds
+ *  ratios. `buckets` holds seven shares: ages [0,90), [90,180), [180,365),
+ *  [365,730), [730,1095), [1095,∞) days, then the no-listing-date bucket;
+ *  `anchors` is the age each bucket's share is centred at, for the log-age
+ *  interpolation tokenOdds runs. The plateau is buckets[5]: the share of
+ *  the record that ever ends with a token. */
+export interface TokenOddsFit {
+  buckets: number[];
+  anchors: number[];
+  category_odds: Record<string, number>;
+  /** Held-out log-loss of the odds model, means over five split evaluations
+   *  (slug parity both ways, first-letter both ways, older-listed fitted to
+   *  newer-listed): the snapshot-wide base rate, the age curve alone, and
+   *  the fitted model with its category ratios. See tokenOddsFit. */
+  validation?: { base: number; age_only: number; fitted: number };
+}
+
 /** The model's constants, as the dashboard states them. */
 export interface ModelConstants {
   base_multiple: number;
@@ -131,6 +150,10 @@ export interface ModelConstants {
    *  the 25th/75th percentiles of market-cap / curve among the live protocols.
    *  Absent on the bare MODEL constant. */
   interval?: { lo: number; hi: number };
+  /** Token odds (see tokenOddsFit): the chance each pre-token row ever lists,
+   *  fitted from the snapshot's own record at build time. Absent on the bare
+   *  MODEL constant. */
+  odds?: TokenOddsFit;
   /** Bootstrap stability of the ranking (see bootstrapStability): the size
    *  slope refitted on 1,000 resamples of the live protocols, and the ranking
    *  refitted on 1,000 resamples with the category factors refit each time.
@@ -193,6 +216,13 @@ export interface BoardRow {
   tier: Tier;
   age_days: number | null;
   implied_value_usd: number;
+  /** The chance this protocol ever lists a token, from the snapshot's own
+   *  record (see tokenOdds): 0.02–0.95, three decimals. */
+  token_odds: number;
+  /** The implied value weighted by those odds: what the launch is worth in
+   *  expectation. Published alongside the implied value, never instead of
+   *  it — the board still ranks by implied value. */
+  expected_value_usd: number;
   /** The farm plan's economics, netted in dollars (see farmEconomics). */
   farm_net_usd: number;
   farm_per_hour_usd: number;
@@ -252,6 +282,8 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  token_odds: number;
+  expected_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
   size_multiplier: number;
@@ -307,6 +339,23 @@ export interface RadarData {
   /** The bootstrap stability block (see bootstrapStability): the slope's
    *  resampled interval and the ranking refit on resampled live sets. */
   bootstrap: NonNullable<ModelConstants['bootstrap']>;
+  /** The census of the whole snapshot (see buildRadar): every protocol the
+   *  snapshot carries, accounted for — the board's pre-token rows, and the
+   *  token-bearing rest split by the market-cap record they carry. The
+   *  counts reconcile exactly: board + token_bearing = total, and
+   *  fitted_live + no_mcap_figure + zero_mcap + negative_mcap =
+   *  token_bearing. */
+  census: {
+    total: number;
+    board: number;
+    token_bearing: number;
+    with_mcap: number;
+    fitted_live: number;
+    live_shown: number;
+    no_mcap_figure: number;
+    zero_mcap: number;
+    negative_mcap: number;
+  };
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -397,6 +446,7 @@ function effectiveModel(snapshot: Snapshot, model: ModelConstants): ModelConstan
   if (model.category_factors === undefined) m.category_factors = categoryFactors(snapshot, m);
   if (model.blind === undefined) m.blind = blindTest(snapshot, m);
   if (model.interval === undefined) m.interval = intervalFactors(snapshot, m);
+  if (model.odds === undefined) m.odds = tokenOddsFit(snapshot);
   return m;
 }
 
@@ -468,6 +518,176 @@ export function intervalFactors(snapshot: Snapshot, model: ModelConstants): { lo
   const ratios = live.map((p) => p.mcap_usd! / impliedValue(p, snapshot.as_of, model).implied).sort((a, b) => a - b);
   const q = (f: number): number => ratios[Math.min(ratios.length - 1, Math.floor(f * ratios.length))]!;
   return { lo: Math.round(q(0.25) * 100) / 100, hi: Math.round(q(0.75) * 100) / 100 };
+}
+
+/** Age bucket edges in days for the token-odds fit: [0,90), [90,180),
+ *  [180,365), [365,730), [730,1095), [1095,∞), plus a bucket for protocols
+ *  with no listing date on record. */
+const ODDS_EDGES = [90, 180, 365, 730, 1095];
+const ODDS_TOP = ODDS_EDGES.length;
+const ODDS_UNK = ODDS_EDGES.length + 1;
+const ODDS_NB = ODDS_EDGES.length + 2;
+
+function oddsBucket(age: number | null): number {
+  if (age === null) return ODDS_UNK;
+  for (let i = 0; i < ODDS_EDGES.length; i++) if (age < ODDS_EDGES[i]!) return i;
+  return ODDS_TOP;
+}
+
+/** The odds fit over one set of protocols: each age bucket's share that has
+ *  a token, shrunk toward the set's overall share (pseudo-count 5) and
+ *  forced non-decreasing across the dated buckets — a listing curve cannot
+ *  fall as age rises — each bucket's centre age (geometric mean, for the
+ *  log-age interpolation), and, when `withCat`, per-category odds ratios on
+ *  the curve: the category's own token odds against the set's, shrunk by
+ *  n/(n+20), clamped to 0.60–1.67, only where a category holds 10 or more
+ *  protocols. Fitted from the record alone; no protocol is named. */
+function fitOddsCore(protocols: SnapshotProtocol[], asOf: string, withCat: boolean): TokenOddsFit {
+  const items = protocols.map((p) => ({ p, age: ageDays(asOf, p.listed_at), tok: !isPreToken(p) }));
+  const g = items.length === 0 ? 0 : items.reduce((s, r) => s + (r.tok ? 1 : 0), 0) / items.length;
+  const cnt = new Array<number>(ODDS_NB).fill(0);
+  const tk = new Array<number>(ODDS_NB).fill(0);
+  const logAge = new Array<number>(ODDS_NB).fill(0);
+  const nAge = new Array<number>(ODDS_NB).fill(0);
+  for (const r of items) {
+    const b = oddsBucket(r.age);
+    cnt[b]!++;
+    if (r.tok) tk[b]!++;
+    if (r.age !== null) { logAge[b]! += Math.log(1 + r.age); nAge[b]!++; }
+  }
+  const buckets = cnt.map((n, i) => (tk[i]! + 5 * g) / (n + 5));
+  for (let i = 1; i <= ODDS_TOP; i++) if (buckets[i]! < buckets[i - 1]!) buckets[i] = buckets[i - 1]!;
+  const edgeMid = [45, 135, 272, 547, 912, 1460, 1460];
+  const anchors = buckets.map((_, i) => (nAge[i]! > 0 ? Math.exp(logAge[i]! / nAge[i]!) - 1 : edgeMid[i]!));
+  const category_odds: Record<string, number> = {};
+  if (withCat && g > 0 && g < 1) {
+    const by = new Map<string, { n: number; t: number }>();
+    for (const r of items) {
+      const k = r.p.category ?? '';
+      const e = by.get(k) ?? { n: 0, t: 0 };
+      e.n++;
+      if (r.tok) e.t++;
+      by.set(k, e);
+    }
+    const go = g / (1 - g);
+    for (const [k, e] of by) {
+      if (e.n < 10) continue;
+      const f = e.t / e.n;
+      if (f <= 0 || f >= 1) continue;
+      const lor = Math.log((f / (1 - f)) / go) * (e.n / (e.n + 20));
+      const cl = Math.min(Math.log(1.67), Math.max(Math.log(0.6), lor));
+      if (Math.abs(cl) > 1e-9) category_odds[k] = Math.round(Math.exp(cl) * 1000) / 1000;
+    }
+  }
+  return { buckets, anchors, category_odds };
+}
+
+/** The listing curve at one age: the bucket shares interpolated in log-age
+ *  between the bucket centres, flat outside them; the no-date bucket's own
+ *  share when the age is unknown. */
+function oddsF(fit: TokenOddsFit, age: number | null): number {
+  if (age === null) return fit.buckets[ODDS_UNK]!;
+  const x = Math.log(1 + age);
+  const xs = fit.anchors.map((a) => Math.log(1 + a));
+  if (x <= xs[0]!) return fit.buckets[0]!;
+  if (x >= xs[ODDS_TOP]!) return fit.buckets[ODDS_TOP]!;
+  for (let i = 1; i <= ODDS_TOP; i++) {
+    if (x <= xs[i]!) {
+      const t = (x - xs[i - 1]!) / (xs[i]! - xs[i - 1]!);
+      return fit.buckets[i - 1]! + t * (fit.buckets[i]! - fit.buckets[i - 1]!);
+    }
+  }
+  return fit.buckets[ODDS_TOP]!;
+}
+
+/** One share of the listing curve, adjusted by a category's odds ratio. */
+function oddsAdjust(fit: TokenOddsFit, f: number, category: string | null): number {
+  const orc = fit.category_odds[category ?? ''] ?? 1;
+  if (orc === 1) return f;
+  const o = (f / (1 - f)) * orc;
+  return o / (1 + o);
+}
+
+/** The chance one protocol ever lists a token, given it has none at `age`:
+ *  of the plateau still ahead of it, the share of its own remaining record —
+ *  (plateau − F(age)) / (1 − F(age)) on the category-adjusted curve, clamped
+ *  to 0.02–0.95. A protocol past the plateau's age has, on this record,
+ *  almost always listed already if it ever will; a young one still has most
+ *  of the curve ahead of it. */
+export function tokenOddsAt(age: number | null, category: string | null, fit: TokenOddsFit): number {
+  const clampF = (f: number): number => Math.min(0.999, Math.max(0.001, f));
+  const f = clampF(oddsAdjust(fit, oddsF(fit, age), category));
+  const fInf = clampF(oddsAdjust(fit, fit.buckets[ODDS_TOP]!, category));
+  return Math.round(Math.min(0.95, Math.max(0.02, (fInf - f) / (1 - f))) * 1000) / 1000;
+}
+
+/** A protocol's token odds under a fitted curve (see tokenOddsAt). */
+export function tokenOdds(p: SnapshotProtocol, asOf: string, fit: TokenOddsFit): number {
+  return tokenOddsAt(ageDays(asOf, p.listed_at), p.category, fit);
+}
+
+/** The odds model's held-out check, in the blind test's spirit: fit on one
+ *  part of the snapshot and score the rest by log-loss, under three splits —
+ *  slug parity both ways, first letter both ways, and older-listed protocols
+ *  fitted to newer-listed ones (the time split: the older half carries
+ *  almost no young protocols, so there the age curve alone can add nothing
+ *  and only the category ratios speak). Three scores per split: the
+ *  snapshot-wide base rate, the age curve alone, and the fitted model. The
+ *  category-block bootstrap around these splits is a builder audit
+ *  (audit15-odds.mts): against the base rate the fitted model's improvement
+ *  holds in all 300 resamples, 90% interval −0.124 to −0.044 log-loss; a
+ *  chain adjustment was fitted the same way and dropped — it helped the
+ *  parity splits and hurt the letter and time splits. */
+function oddsValidation(snapshot: Snapshot): { base: number; age_only: number; fitted: number } {
+  const ps = snapshot.protocols;
+  const parity = (s: string): number => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
+  const splits: { tr: SnapshotProtocol[]; te: SnapshotProtocol[] }[] = [];
+  const A = ps.filter((p) => parity(p.slug) === 0);
+  const B = ps.filter((p) => parity(p.slug) !== 0);
+  splits.push({ tr: A, te: B }, { tr: B, te: A });
+  const C = ps.filter((p) => (p.slug[0] ?? 'a') < 'n');
+  const D = ps.filter((p) => (p.slug[0] ?? 'a') >= 'n');
+  splits.push({ tr: C, te: D }, { tr: D, te: C });
+  const dated = ps.filter((p) => p.listed_at !== null).sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : 1));
+  const h = Math.floor(dated.length / 2);
+  splits.push({ tr: dated.slice(0, h), te: dated.slice(h) });
+  const logLoss = (pred: (p: SnapshotProtocol) => number, test: SnapshotProtocol[]): number => {
+    let s = 0;
+    for (const p of test) {
+      const q = Math.min(1 - 1e-4, Math.max(1e-4, pred(p)));
+      s += !isPreToken(p) ? -Math.log(q) : -Math.log(1 - q);
+    }
+    return s / test.length;
+  };
+  const predFrom = (core: TokenOddsFit): ((p: SnapshotProtocol) => number) => (p) =>
+    Math.min(0.999, Math.max(0.001, oddsAdjust(core, oddsF(core, ageDays(snapshot.as_of, p.listed_at)), p.category)));
+  let sb = 0, sa = 0, sf = 0;
+  for (const s of splits) {
+    const g = s.tr.reduce((x, p) => x + (!isPreToken(p) ? 1 : 0), 0) / s.tr.length;
+    sb += logLoss(() => g, s.te);
+    sa += logLoss(predFrom(fitOddsCore(s.tr, snapshot.as_of, false)), s.te);
+    sf += logLoss(predFrom(fitOddsCore(s.tr, snapshot.as_of, true)), s.te);
+  }
+  const r3 = (x: number): number => Math.round(x * 1000) / 1000;
+  return { base: r3(sb / splits.length), age_only: r3(sa / splits.length), fitted: r3(sf / splits.length) };
+}
+
+/** The token-odds fit for the whole snapshot (see TokenOddsFit), with its
+ *  held-out validation attached. On this snapshot the record reads: of 758
+ *  protocols, 416 have a token; the share that has one rises from about a
+ *  third in the first 90 days to a plateau of about 78% past three years,
+ *  so a pre-token protocol's odds of ever listing fall as it ages — the
+ *  opposite of the value model's maturity term, and the two are published
+ *  side by side rather than netted into one number. */
+export function tokenOddsFit(snapshot: Snapshot): TokenOddsFit {
+  const core = fitOddsCore(snapshot.protocols, snapshot.as_of, true);
+  const r3 = (x: number): number => Math.round(x * 1000) / 1000;
+  return {
+    buckets: core.buckets.map(r3),
+    anchors: core.anchors.map((a) => Math.round(a)),
+    category_odds: core.category_odds,
+    validation: oddsValidation(snapshot),
+  };
 }
 
 /** A deterministic PRNG (mulberry32): the bootstrap resamples with a fixed
@@ -672,9 +892,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     // Copies are measured on the same ruler at a 2% weight, then rescaled so the largest
     // copy stays below the smallest launch: their order is their own, their place is below.
     const implied = maxRaw > 0 ? Math.max(1, Math.round((s.raw / maxRaw) * copyCap)) : 1;
-    return toRow(s.p, s, implied, 'copy', interval);
+    return toRow(s.p, s, implied, 'copy', interval, m.odds);
   });
-  const launchRows: BoardRow[] = scoredLaunches.map((s) => toRow(s.p, s, s.implied, 'launch', interval));
+  const launchRows: BoardRow[] = scoredLaunches.map((s) => toRow(s.p, s, s.implied, 'launch', interval, m.odds));
   const rows = [...launchRows, ...copyRows];
   rows.forEach((r, i) => {
     r.rank = i + 1;
@@ -709,8 +929,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   return rows;
 }
 
-function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier, interval: { lo: number; hi: number }): BoardRow {
+function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; maturityMult: number; sizeMult: number; catMult: number; age: number | null }, implied: number, tier: Tier, interval: { lo: number; hi: number }, oddsFit?: TokenOddsFit): BoardRow {
   const econ = farmEconomics(p, v.age, implied, interval.lo);
+  const odds = oddsFit !== undefined ? tokenOddsAt(v.age, p.category, oddsFit) : 1;
   return {
     rank: 0,
     slug: p.slug,
@@ -727,6 +948,8 @@ function toRow(p: SnapshotProtocol, v: { growthPct: number; growthMult: number; 
     tier,
     age_days: v.age,
     implied_value_usd: implied,
+    token_odds: odds,
+    expected_value_usd: Math.round(implied * odds),
     farm_net_usd: econ.net_usd,
     farm_per_hour_usd: econ.net_per_hour_usd,
     farm_verdict: econ.verdict,
@@ -1268,6 +1491,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    token_odds: row.token_odds,
+    expected_value_usd: row.expected_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     size_multiplier: row.model.size_multiplier,
@@ -1323,6 +1548,24 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   // each launch row's own median/90th-percentile move (rank_boot_med/p90), and
   // radarRow copies them — mapped first, they would still be null.
   const boot = bootstrapStability(snapshot, m, board.filter((r) => r.tier === 'launch'), proto);
+  // The census: every protocol in the snapshot, accounted for. The board
+  // carries the pre-token ones; the token-bearing rest is split by the
+  // market-cap record it carries — a usable figure (the live set the size
+  // curve is fitted on), no figure at all, a figure of $0, or the one
+  // −$1 placeholder the source carries. Counted here, from the snapshot,
+  // so the dashboard's accounting can be checked against the source.
+  const tokenBearing = snapshot.protocols.filter((p) => !isPreToken(p));
+  const census = {
+    total: snapshot.protocols.length,
+    board: board.length,
+    token_bearing: tokenBearing.length,
+    with_mcap: tokenBearing.filter((p) => p.mcap_usd !== null).length,
+    fitted_live: tokenBearing.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0).length,
+    live_shown: live.length,
+    no_mcap_figure: tokenBearing.filter((p) => p.mcap_usd === null).length,
+    zero_mcap: tokenBearing.filter((p) => p.mcap_usd === 0).length,
+    negative_mcap: tokenBearing.filter((p) => p.mcap_usd !== null && p.mcap_usd < 0).length,
+  };
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -1339,6 +1582,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     sensitivity,
     sensitivity_rank_moves: { at_045: rankMoves(0.45), at_055: rankMoves(0.55) },
     bootstrap: boot,
+    census,
   };
   return { board, radar };
 }
